@@ -178,6 +178,8 @@ class PortfolioDonuts(BaseModel):
     by_position: list[DonutSlice] = Field(default_factory=list)
     by_envelope: list[DonutSlice] = Field(default_factory=list)
     by_sector: list[DonutSlice] = Field(default_factory=list)
+    by_sector_lookthrough: list[DonutSlice] = Field(default_factory=list)
+    by_geography: list[DonutSlice] = Field(default_factory=list)
 
 
 class PortfolioWeightedStats(BaseModel):

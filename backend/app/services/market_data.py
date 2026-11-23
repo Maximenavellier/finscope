@@ -38,6 +38,7 @@ EEA_SUFFIXES = (
     ".PA",
     ".AS",
     ".DE",
+    ".DU",
     ".MI",
     ".MC",
     ".BR",
@@ -221,11 +222,74 @@ def infer_region_and_pea(
     return "US", False
 
 
+_SUFFIX_TO_COUNTRY: dict[str, str] = {
+    ".PA": "France",
+    ".DE": "Germany",
+    ".DU": "Germany",
+    ".AS": "Netherlands",
+    ".MI": "Italy",
+    ".MC": "Spain",
+    ".BR": "Belgium",
+    ".LS": "Portugal",
+    ".HE": "Finland",
+    ".VI": "Austria",
+    ".IR": "Ireland",
+    ".CO": "Denmark",
+    ".OL": "Norway",
+    ".ST": "Sweden",
+    ".SW": "Switzerland",
+    ".L": "United Kingdom",
+    ".T": "Japan",
+    ".HK": "Hong Kong",
+    ".TO": "Canada",
+    ".AX": "Australia",
+}
+
+
+def _infer_country_from_ticker(ticker: str, region: Optional[str] = None) -> Optional[str]:
+    sym = normalize_ticker(ticker)
+    for suf, country in _SUFFIX_TO_COUNTRY.items():
+        if sym.endswith(suf):
+            return country
+    if region == "US" or ("." not in sym and region != "OTHER"):
+        return "United States"
+    if region == "EU":
+        return "Europe"
+    return None
+
+
+_FINNHUB_INDUSTRY_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("semiconductor", "software", "technology", "hardware", "it services", "electronic", "cyber"), "Technology"),
+    (("health", "biotech", "pharma", "medical", "life sciences", "drug"), "Healthcare"),
+    (("bank", "financ", "insurance", "capital market", "credit", "asset management", "fintech"), "Financial Services"),
+    (("telecom", "media", "communication", "entertainment", "interactive"), "Communication Services"),
+    (("auto", "luxury", "retail", "apparel", "hotel", "restaurant", "leisure", "consumer cyclical"), "Consumer Cyclical"),
+    (("food", "beverage", "tobacco", "household", "personal products", "consumer defensive"), "Consumer Defensive"),
+    (("aerospace", "defense", "industrial", "machinery", "construction", "logistics", "transport", "airlines", "electrical"), "Industrials"),
+    (("oil", "gas", "energy", "petroleum"), "Energy"),
+    (("chemical", "mining", "metal", "steel", "materials", "paper", "forest"), "Basic Materials"),
+    (("utilit", "electric", "water", "power"), "Utilities"),
+    (("real estate", "reit"), "Real Estate"),
+)
+
+
+def _map_industry_to_sector(industry: Optional[str]) -> Optional[str]:
+    if not industry:
+        return None
+    low = str(industry).strip().lower()
+    if not low:
+        return None
+    for keywords, sector in _FINNHUB_INDUSTRY_KEYWORDS:
+        if any(kw in low for kw in keywords):
+            return sector
+    return None
+
+
 _KNOWN_BRAND_DOMAINS: tuple[tuple[str, str], ...] = (
     ("amundi", "amundietf.fr"),
     ("am. etf", "amundietf.fr"),
     ("lyxor", "amundietf.fr"),
-    ("bnp paribas", "easy.bnpparibas.fr"),
+    ("bnp paribas", "bnpparibas-am.com"),
     ("ishares", "ishares.com"),
     ("blackrock", "ishares.com"),
     ("vanguard", "vanguard.com"),
@@ -256,7 +320,7 @@ _KNOWN_TICKER_DOMAINS: dict[str, str] = {
     "PE500.PA": "amundietf.fr",
     "PANX.PA": "amundietf.fr",
     "EWLD.PA": "amundietf.fr",
-    "ESE.PA": "easy.bnpparibas.fr",
+    "ESE.PA": "bnpparibas-am.com",
     "WPEA.PA": "ishares.com",
 }
 
@@ -433,6 +497,48 @@ class MarketDataService:
             return searched
 
         return sym
+
+    def _resolve_sector_and_industry(
+        self,
+        db: Session,
+        sym: str,
+        asset_type: str,
+        sector: Optional[str],
+        industry: Optional[str],
+        fh_industry: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        cur_industry = str(industry or fh_industry or "").strip() or None
+        if asset_type == "ETF":
+            return "ETF", cur_industry
+
+        cur_sector = str(sector or "").strip() or None
+        invalid_sectors = {"ETF", "AUTRE", "OTHER", "UNKNOWN", "N/A"}
+        missing_sector = cur_sector is None or cur_sector.upper() in invalid_sectors
+
+        if missing_sector or not cur_industry:
+            existing_asset = db.get(Asset, sym)
+            if existing_asset:
+                if missing_sector and existing_asset.sector and existing_asset.sector.strip().upper() not in invalid_sectors:
+                    cur_sector = existing_asset.sector.strip()
+                    missing_sector = False
+                if not cur_industry and existing_asset.industry:
+                    cur_industry = existing_asset.industry.strip()
+
+        if missing_sector or not cur_industry:
+            seed_item = _seed_by_ticker().get(sym)
+            if seed_item:
+                if missing_sector and seed_item.get("sector"):
+                    cur_sector = str(seed_item["sector"]).strip()
+                    missing_sector = False
+                if not cur_industry and seed_item.get("industry"):
+                    cur_industry = str(seed_item["industry"]).strip()
+
+        if missing_sector and cur_industry:
+            mapped = _map_industry_to_sector(cur_industry)
+            if mapped:
+                cur_sector = mapped
+
+        return cur_sector, cur_industry
 
     def _fmp_get(self, url_or_path: str, params: Optional[dict[str, Any]] = None) -> Optional[Any]:
         settings = get_settings()
@@ -964,13 +1070,14 @@ class MarketDataService:
             payload["name"] = resolved_name
             repaired = True
 
-        if not payload.get("logo_url"):
+        cur_logo = str(payload.get("logo_url") or "")
+        if not cur_logo or "easy.bnpparibas.fr" in cur_logo:
             new_logo = build_logo_url(
                 sym,
                 website=payload.get("website"),
                 name=payload.get("name"),
             )
-            if new_logo:
+            if new_logo and new_logo != cur_logo:
                 payload["logo_url"] = new_logo
                 repaired = True
 
@@ -989,11 +1096,33 @@ class MarketDataService:
         if payload.get("asset_type") != detected:
             repaired = True
         payload["asset_type"] = detected
+
+        if not payload.get("country"):
+            inferred_country = _infer_country_from_ticker(sym, payload.get("region"))
+            if inferred_country:
+                payload["country"] = inferred_country
+                repaired = True
+
         if detected == "ETF":
-            payload["sector"] = "ETF"
+            if payload.get("sector") != "ETF":
+                payload["sector"] = "ETF"
+                repaired = True
             payload["next_earnings_date"] = None
             payload["days_until_earnings"] = None
         else:
+            resolved_sec, resolved_ind = self._resolve_sector_and_industry(
+                db,
+                sym,
+                detected,
+                payload.get("sector"),
+                payload.get("industry"),
+            )
+            if resolved_sec and resolved_sec != payload.get("sector"):
+                payload["sector"] = resolved_sec
+                repaired = True
+            if resolved_ind and resolved_ind != payload.get("industry"):
+                payload["industry"] = resolved_ind
+                repaired = True
             days = self._compute_days_until_earnings(payload.get("next_earnings_date"))
             if days is None:
                 payload["next_earnings_date"] = None
@@ -1023,6 +1152,18 @@ class MarketDataService:
                         changed_asset = True
                     if asset.asset_type != detected:
                         asset.asset_type = detected
+                        changed_asset = True
+                    if payload.get("sector") and asset.sector != payload["sector"]:
+                        asset.sector = str(payload["sector"])[:128]
+                        changed_asset = True
+                    if payload.get("industry") and asset.industry != payload["industry"]:
+                        asset.industry = str(payload["industry"])[:128]
+                        changed_asset = True
+                    if payload.get("region") and asset.region != payload["region"]:
+                        asset.region = str(payload["region"])[:16]
+                        changed_asset = True
+                    if bool(asset.pea_eligible) != bool(payload.get("pea_eligible", False)):
+                        asset.pea_eligible = bool(payload.get("pea_eligible", False))
                         changed_asset = True
                     if changed_asset:
                         db.commit()
@@ -1126,10 +1267,19 @@ class MarketDataService:
 
             website = info.get("website") or fh_weburl
             logo_url = build_logo_url(sym, finnhub_logo=fh_logo, website=website, name=name)
-            country = info.get("country")
+            raw_country = info.get("country")
             exchange = info.get("exchange") or info.get("fullExchangeName")
-            region, pea_eligible = infer_region_and_pea(sym, country, exchange, asset_type)
+            region, pea_eligible = infer_region_and_pea(sym, raw_country, exchange, asset_type)
+            country = raw_country or _infer_country_from_ticker(sym, region)
             currency = info.get("currency") or fast_currency or ("EUR" if region == "EU" else "USD")
+            sector, industry = self._resolve_sector_and_industry(
+                db,
+                sym,
+                asset_type,
+                info.get("sector"),
+                info.get("industry"),
+                fh_industry=fh_industry,
+            )
 
             # Normalize ETF expense ratio: yfinance `netExpenseRatio` can be in % (e.g. 0.38) while `annualReportExpenseRatio` is decimal (0.0038)
             expense_ratio = safe_float(info.get("annualReportExpenseRatio"))
@@ -1165,8 +1315,8 @@ class MarketDataService:
                 "country": country,
                 "region": region,
                 "pea_eligible": pea_eligible,
-                "sector": "ETF" if asset_type == "ETF" else info.get("sector"),
-                "industry": info.get("industry") or fh_industry,
+                "sector": sector,
+                "industry": industry,
                 "website": website,
                 "logo_url": logo_url,
                 "description": info.get("longBusinessSummary"),
@@ -1264,8 +1414,10 @@ class MarketDataService:
         asset.currency = quote.get("currency")
         asset.region = quote.get("region") or "US"
         asset.pea_eligible = bool(quote.get("pea_eligible", False))
-        asset.sector = quote.get("sector")
-        asset.industry = quote.get("industry")
+        if quote.get("sector"):
+            asset.sector = str(quote["sector"])[:128]
+        if quote.get("industry"):
+            asset.industry = str(quote["industry"])[:128]
         if quote.get("logo_url"):
             asset.logo_url = quote["logo_url"]
         asset.market_cap = quote.get("market_cap")

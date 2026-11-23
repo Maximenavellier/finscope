@@ -314,7 +314,7 @@ def test_rate_limited_quote_resolves_names_logos_and_repairs_cache(db_session, m
     expected = {
         "NVDA": ("NVIDIA Corporation", "EQUITY", False, "nvidia.com"),
         "PUST.PA": ("Amundi PEA Nasdaq-100 UCITS ETF Acc", "ETF", True, "amundietf.fr"),
-        "ESE.PA": ("BNP Paribas Easy S&P 500 UCITS ETF", "ETF", True, "easy.bnpparibas.fr"),
+        "ESE.PA": ("BNP Paribas Easy S&P 500 UCITS ETF", "ETF", True, "bnpparibas-am.com"),
         "18MH.DU": ("Amundi PEA MSCI Emerging Markets UCITS ETF Acc", "ETF", True, "amundietf.fr"),
     }
     for sym, (exp_name, exp_type, exp_pea, exp_domain) in expected.items():
@@ -350,3 +350,106 @@ def test_rate_limited_quote_resolves_names_logos_and_repairs_cache(db_session, m
         assert repaired["asset_type"] == exp_type
         assert repaired["pea_eligible"] is exp_pea
         assert repaired["logo_url"] and exp_domain in repaired["logo_url"]
+
+
+def test_sector_country_repair_and_etf_lookthrough_geography(client, db_session, monkeypatch):
+    from app.services.cache_service import cache_service
+    from app.services.market_data import market_data_service
+
+    dts = pd.date_range(start="2025-11-01", end="2026-11-20", freq="B")
+    df = pd.DataFrame({"Close": [100.0] * len(dts)}, index=dts)
+    empty_info_tk = SimpleNamespace(
+        info={},
+        fast_info=SimpleNamespace(last_price=100.0, previous_close=99.0, currency="USD"),
+        history=lambda **kwargs: df,
+        quarterly_financials=pd.DataFrame(),
+        financials=pd.DataFrame(),
+        quarterly_income_stmt=pd.DataFrame(),
+        income_stmt=pd.DataFrame(),
+        quarterly_balance_sheet=pd.DataFrame(),
+        balance_sheet=pd.DataFrame(),
+        quarterly_cashflow=pd.DataFrame(),
+        cashflow=pd.DataFrame(),
+        dividends=pd.Series(dtype=float),
+        earnings_history=None,
+        recommendations_summary=None,
+        news=[],
+    )
+    tk_fx = SimpleNamespace(
+        fast_info=SimpleNamespace(last_price=1.0),
+        history=lambda **kwargs: pd.DataFrame({"Close": [1.0]}),
+    )
+    monkeypatch.setattr(
+        "app.services.market_data.yf.Ticker",
+        lambda sym: tk_fx if sym == "EURUSD=X" else empty_info_tk,
+    )
+    monkeypatch.setattr(
+        "app.services.market_data.MarketDataService._fetch_yf_search_name",
+        lambda self, sym: None,
+    )
+
+    # 1) Live & cache-hit repair of sector + country when Yahoo tk.info == {}
+    for sym, exp_sector, exp_country in [
+        ("NVDA", "Technology", "United States"),
+        ("ZS", "Technology", "United States"),
+        ("LLY", "Healthcare", "United States"),
+    ]:
+        q_live = market_data_service.get_quote_and_info(db_session, sym, refresh=True)
+        assert q_live["sector"] == exp_sector
+        assert q_live["country"] == exp_country
+
+        cache_service.set(
+            db_session,
+            f"quote:{sym}",
+            "quote",
+            {
+                "ticker": sym,
+                "name": sym,
+                "asset_type": "EQUITY",
+                "currency": "USD",
+                "region": "US",
+                "sector": None,
+                "country": None,
+                "price": 100.0,
+            },
+        )
+        q_rep = market_data_service.get_quote_and_info(db_session, sym, refresh=False)
+        assert q_rep["sector"] == exp_sector
+        assert q_rep["country"] == exp_country
+
+    # 2) Portfolio donuts: equities-only by_sector + look-through ETF sectors + geography
+    for ticker, env, qty in [
+        ("NVDA", "CTO", 1.0),
+        ("LLY", "CTO", 1.0),
+        ("PUST.PA", "PEA", 2.0),
+        ("ESE.PA", "PEA", 2.0),
+        ("18MH.DU", "PEA", 2.0),
+    ]:
+        res = client.post(
+            "/api/portfolio/positions",
+            json={"ticker": ticker, "envelope": env, "quantity": qty, "pru": 90.0, "currency": "EUR"},
+        )
+        assert res.status_code == 201
+
+    dash = client.get("/api/portfolio").json()
+    donuts = dash["donuts"]
+
+    # Equities-only by_sector must NOT be 100% Autre
+    eq_sectors = {s["name"]: s["weight_pct"] for s in donuts["by_sector"]}
+    assert "Autre" not in eq_sectors
+    assert eq_sectors["Technology"] == pytest.approx(50.0, abs=0.2)
+    assert eq_sectors["Healthcare"] == pytest.approx(50.0, abs=0.2)
+
+    # Look-through sector donut includes stocks + ETF decompositions
+    lt_sectors = {s["name"]: s["weight_pct"] for s in donuts["by_sector_lookthrough"]}
+    assert sum(lt_sectors.values()) == pytest.approx(100.0, abs=0.5)
+    assert lt_sectors["Technologie"] > 30.0
+    assert lt_sectors["Santé"] > 15.0
+    assert "Finance" in lt_sectors
+
+    # Geographic diversification sums to 100% and splits US vs Asie & Émergents vs Europe
+    geo = {s["name"]: s["weight_pct"] for s in donuts["by_geography"]}
+    assert sum(geo.values()) == pytest.approx(100.0, abs=0.5)
+    assert geo["États-Unis"] > 60.0
+    assert geo["Asie & Émergents"] > 20.0
+    assert "Europe" in geo

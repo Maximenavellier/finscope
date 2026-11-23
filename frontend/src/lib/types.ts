@@ -510,6 +510,8 @@ export interface PortfolioDonuts {
   by_position: DonutSlice[];
   by_envelope: DonutSlice[];
   by_sector: DonutSlice[];
+  by_sector_lookthrough?: DonutSlice[];
+  by_geography?: DonutSlice[];
 }
 
 export interface PortfolioWeightedStats {

@@ -375,7 +375,7 @@ export function PositionsTable({
                         )}
                       </td>
 
-                      <td className="px-3 py-3 text-right font-semibold tabular-nums text-slate-900 dark:text-white">
+                      <td className="px-3 py-3 text-right whitespace-nowrap font-semibold tabular-nums text-slate-900 dark:text-white">
                         {formatPrice(convEur(pos.current_value_eur), displayCurrency)}
                       </td>
 
@@ -409,7 +409,7 @@ export function PositionsTable({
                         )}
                       </td>
 
-                      <td className="px-3 py-3 text-right font-medium tabular-nums text-slate-700 dark:text-slate-200">
+                      <td className="px-3 py-3 text-right whitespace-nowrap font-medium tabular-nums text-slate-700 dark:text-slate-200">
                         {pos.weight_pct.toFixed(1).replace(".", ",")} %
                       </td>
 

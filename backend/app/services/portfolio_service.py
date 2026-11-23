@@ -31,6 +31,11 @@ from app.schemas.portfolio import (
     WatchlistItemUpdate,
 )
 from app.services.decision_engine import compute_dca_plan, detect_red_flags
+from app.services.etf_lookthrough import (
+    get_etf_lookthrough,
+    normalize_geo_fr,
+    normalize_sector_fr,
+)
 from app.services.market_data import detect_asset_type, market_data_service, normalize_ticker
 from app.services.scoring_engine import (
     get_cached_sector_averages,
@@ -532,6 +537,8 @@ class PortfolioService:
         by_position_map: dict[str, float] = defaultdict(float)
         by_envelope_map: dict[str, float] = defaultdict(float)
         by_sector_map: dict[str, float] = defaultdict(float)
+        by_sector_lt_map: dict[str, float] = defaultdict(float)
+        by_geo_map: dict[str, float] = defaultdict(float)
 
         equities_items = [i for i in valued_items if i["asset_type"] == "EQUITY"]
         etfs_items = [i for i in valued_items if i["asset_type"] == "ETF"]
@@ -545,13 +552,42 @@ class PortfolioService:
             )
             by_position_map[item["ticker"]] += val
             by_envelope_map[item["envelope"]] += val
+            quote_info = (item.get("_bundle") or {}).get("quote") or {}
+
             if item["asset_type"] != "ETF":
                 sec_label = item["sector"] or "Autre"
                 by_sector_map[sec_label] += val
+                by_sector_lt_map[normalize_sector_fr(item["sector"])] += val
+                geo_label = normalize_geo_fr(
+                    quote_info.get("country"),
+                    quote_info.get("region"),
+                    item["ticker"],
+                )
+                by_geo_map[geo_label] += val
+            else:
+                sec_weights, geo_weights = get_etf_lookthrough(item["ticker"], item.get("name"))
+                if sec_weights:
+                    for sec_name, w in sec_weights.items():
+                        by_sector_lt_map[sec_name] += val * w
+                else:
+                    by_sector_lt_map["ETF non ventilé"] += val
+
+                if geo_weights:
+                    for geo_name, w in geo_weights.items():
+                        by_geo_map[geo_name] += val * w
+                else:
+                    geo_label = normalize_geo_fr(
+                        quote_info.get("country"),
+                        quote_info.get("region"),
+                        item["ticker"],
+                    )
+                    by_geo_map[geo_label] += val
 
         by_position_slices = _build_donut_slices(by_position_map, positions_total_value)
         by_envelope_slices = _build_donut_slices(by_envelope_map, positions_total_value)
         by_sector_slices = _build_donut_slices(by_sector_map, equities_total)
+        by_sector_lt_slices = _build_donut_slices(by_sector_lt_map, positions_total_value)
+        by_geo_slices = _build_donut_slices(by_geo_map, positions_total_value)
 
         top5_weight_pct = round(sum(s["weight_pct"] for s in by_position_slices[:5]), 2)
         equities_weight_pct = (
@@ -682,6 +718,8 @@ class PortfolioService:
                     "by_position": by_position_slices,
                     "by_envelope": by_envelope_slices,
                     "by_sector": by_sector_slices,
+                    "by_sector_lookthrough": by_sector_lt_slices,
+                    "by_geography": by_geo_slices,
                 },
                 "dividends": dividends_summary,
                 "positions": clean_positions,

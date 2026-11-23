@@ -213,7 +213,7 @@ export function OverviewTab({
                           <span>{item.label}</span>
                           <InfoTooltip text={item.tooltip} />
                         </dt>
-                        <dd className="font-semibold tabular-nums text-slate-900 dark:text-white">
+                        <dd className="shrink-0 whitespace-nowrap font-semibold tabular-nums text-slate-900 dark:text-white">
                           {item.value}
                         </dd>
                       </div>
