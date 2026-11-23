@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0F172A"/>
+  <rect x="28" y="28" width="456" height="456" rx="92" fill="url(#finscopeGrad)"/>
+  <path d="M116 336L204 248L272 296L396 164" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M328 164H396V232" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="116" cy="336" r="18" fill="#60A5FA"/>
+  <circle cx="204" cy="248" r="18" fill="#93C5FD"/>
+  <circle cx="272" cy="296" r="18" fill="#93C5FD"/>
+  <circle cx="396" cy="164" r="20" fill="#FFFFFF"/>
+  <defs>
+    <linearGradient id="finscopeGrad" x1="36" y1="36" x2="476" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+</svg>
