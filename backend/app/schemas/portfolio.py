@@ -53,6 +53,12 @@ class PortfolioPositionItem(BaseModel):
     cost_basis_eur: float = 0.0
     pnl_eur: float = 0.0
     pnl_pct: Optional[float] = None
+    day_change_eur: Optional[float] = None
+    day_change_pct: Optional[float] = None
+    perf_1m_eur: Optional[float] = None
+    perf_1m_pct: Optional[float] = None
+    perf_1y_eur: Optional[float] = None
+    perf_1y_pct: Optional[float] = None
     weight_pct: float = 0.0
     score_global: Optional[float] = None
     score_valuation: Optional[float] = None
@@ -168,6 +174,12 @@ class PortfolioWeightedStats(BaseModel):
     total_cost_eur: float = 0.0
     total_pnl_eur: float = 0.0
     total_pnl_pct: Optional[float] = None
+    day_pnl_eur: Optional[float] = None
+    day_pnl_pct: Optional[float] = None
+    perf_1m_eur: Optional[float] = None
+    perf_1m_pct: Optional[float] = None
+    perf_1y_eur: Optional[float] = None
+    perf_1y_pct: Optional[float] = None
     positions_count: int = 0
     equities_count: int = 0
     etfs_count: int = 0

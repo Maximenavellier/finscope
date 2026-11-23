@@ -1109,9 +1109,9 @@ class MarketDataService:
         refresh: bool = False,
     ) -> dict[str, Any]:
         sym = normalize_ticker(ticker)
-        period_map = {"1A": "1Y", "3A": "3Y", "5A": "5Y", "10A": "10Y"}
+        period_map = {"1J": "1D", "5J": "5D", "1A": "1Y", "3A": "3Y", "5A": "5Y", "10A": "10Y"}
         period_norm = period_map.get(period.strip().upper(), period.strip().upper())
-        if period_norm not in {"1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "MAX"}:
+        if period_norm not in {"1D", "5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "MAX"}:
             period_norm = "MAX"
 
         cache_key = f"prices:{sym}:MAX"
@@ -1221,23 +1221,29 @@ class MarketDataService:
 
         if all_points and period_norm != "MAX":
             last_dt = datetime.strptime(all_points[-1]["date"], "%Y-%m-%d")
-            if period_norm == "YTD":
-                cutoff_str = f"{last_dt.year}-01-01"
+            if period_norm == "1D":
+                sliced_points = all_points[-2:] if len(all_points) >= 2 else all_points[-1:]
             else:
-                days_map = {
-                    "1M": 31,
-                    "3M": 92,
-                    "6M": 183,
-                    "1Y": 365,
-                    "3Y": 1096,
-                    "5Y": 1826,
-                    "10Y": 3652,
-                }
-                cutoff_dt = last_dt - timedelta(days=days_map[period_norm])
-                cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
-            sliced_points = [pt for pt in all_points if pt["date"] >= cutoff_str]
-            if not sliced_points:
-                sliced_points = all_points[-1:]
+                if period_norm == "YTD":
+                    cutoff_str = f"{last_dt.year}-01-01"
+                else:
+                    days_map = {
+                        "5D": 7,
+                        "1M": 31,
+                        "3M": 92,
+                        "6M": 183,
+                        "1Y": 365,
+                        "3Y": 1096,
+                        "5Y": 1826,
+                        "10Y": 3652,
+                    }
+                    cutoff_dt = last_dt - timedelta(days=days_map[period_norm])
+                    cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
+                sliced_points = [pt for pt in all_points if pt["date"] >= cutoff_str]
+                if not sliced_points:
+                    sliced_points = all_points[-1:]
+                elif period_norm == "5D" and len(sliced_points) < 2 and len(all_points) >= 2:
+                    sliced_points = all_points[-2:]
             sliced_splits = [sp for sp in all_splits if sp["date"] >= sliced_points[0]["date"]]
         else:
             sliced_points = all_points

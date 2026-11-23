@@ -412,6 +412,12 @@ export interface PortfolioPositionItem {
   cost_basis_eur: number;
   pnl_eur: number;
   pnl_pct?: number | null;
+  day_change_eur?: number | null;
+  day_change_pct?: number | null;
+  perf_1m_eur?: number | null;
+  perf_1m_pct?: number | null;
+  perf_1y_eur?: number | null;
+  perf_1y_pct?: number | null;
   weight_pct: number;
   score_global?: number | null;
   score_valuation?: number | null;
@@ -501,6 +507,12 @@ export interface PortfolioWeightedStats {
   total_cost_eur: number;
   total_pnl_eur: number;
   total_pnl_pct?: number | null;
+  day_pnl_eur?: number | null;
+  day_pnl_pct?: number | null;
+  perf_1m_eur?: number | null;
+  perf_1m_pct?: number | null;
+  perf_1y_eur?: number | null;
+  perf_1y_pct?: number | null;
   positions_count: number;
   equities_count: number;
   etfs_count: number;

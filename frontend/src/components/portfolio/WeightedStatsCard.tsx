@@ -82,7 +82,7 @@ export function WeightedStatsCard({
 
       <CardContent className="space-y-5">
         {/* Top KPIs */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/40">
             <p className="text-[11px] text-slate-500 dark:text-slate-400">Valeur totale</p>
             <p className="mt-0.5 text-lg font-bold tabular-nums text-slate-900 dark:text-white">
@@ -112,6 +112,40 @@ export function WeightedStatsCard({
             >
               {formatPercent(stats.total_pnl_pct, { signed: true })}
             </p>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Perf. du jour</p>
+            {isValidNumber(stats.day_pnl_eur) ? (
+              <>
+                <p
+                  className={cn(
+                    "mt-0.5 text-lg font-bold tabular-nums",
+                    stats.day_pnl_eur >= 0
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : "text-rose-600 dark:text-rose-400"
+                  )}
+                >
+                  {stats.day_pnl_eur > 0 ? "+" : ""}
+                  {formatPrice(conv(stats.day_pnl_eur), displayCurrency)}
+                </p>
+                <p
+                  className={cn(
+                    "text-[11px] font-semibold tabular-nums",
+                    stats.day_pnl_eur >= 0
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : "text-rose-600 dark:text-rose-400"
+                  )}
+                >
+                  {formatPercent(stats.day_pnl_pct, { signed: true })}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-slate-400">—</p>
+                <p className="text-[11px] text-slate-400">Indisponible</p>
+              </>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/40">

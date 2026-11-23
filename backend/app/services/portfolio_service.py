@@ -4,7 +4,7 @@ import logging
 from bisect import bisect_right
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Literal, Optional
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -88,12 +88,17 @@ def _enrich_single_ticker(
     with session_factory() as db:
         try:
             quote = market_data_service.get_quote_and_info(db, sym, refresh=refresh)
+            prices: Optional[dict[str, Any]] = None
             if quote.get("asset_type") == "ETF":
                 prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=refresh)
                 scores = score_etf(quote, prices)
                 fair_value = None
                 red_flags: list[dict[str, Any]] = []
             else:
+                try:
+                    prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=refresh)
+                except Exception:
+                    prices = None
                 funds = market_data_service.get_fundamentals(db, sym, refresh=refresh)
                 sec_avg = get_cached_sector_averages(
                     db, quote.get("sector"), quote.get("industry"), sym
@@ -104,6 +109,7 @@ def _enrich_single_ticker(
             persist_asset_scores(db, sym, scores)
             return {
                 "quote": quote,
+                "prices": prices,
                 "scores": scores,
                 "metrics": scores.get("metrics") or {},
                 "roa": safe_float(quote.get("roa")),
@@ -224,6 +230,103 @@ def _weighted_avg(
     return round(sum(v * w for v, w in valid) / total_w, decimals)
 
 
+def _pct_to_eur_and_pct(
+    current_val_eur: float, pct: Optional[float]
+) -> tuple[Optional[float], Optional[float]]:
+    if pct is None:
+        return None, None
+    denom = 1.0 + (pct / 100.0)
+    eur_val: Optional[float] = None
+    if current_val_eur > 0 and denom > 0:
+        prev_val = current_val_eur / denom
+        eur_val = round(current_val_eur - prev_val, 2)
+    elif current_val_eur == 0:
+        eur_val = 0.0
+    return eur_val, round(pct, 2)
+
+
+def _compute_period_perf(
+    current_value_eur: float,
+    quote: dict[str, Any],
+    prices: Optional[dict[str, Any]],
+) -> dict[str, Optional[float]]:
+    raw_points = (prices or {}).get("points") or []
+    hist_pts: list[tuple[str, float]] = []
+    for pt in raw_points:
+        dt = pt.get("date")
+        c = safe_float(pt.get("close"))
+        if dt and c is not None and c > 0:
+            hist_pts.append((str(dt)[:10], float(c)))
+
+    day_pct = safe_float(quote.get("day_change_pct"))
+    if day_pct is None and len(hist_pts) >= 2:
+        prev_c = hist_pts[-2][1]
+        last_c = hist_pts[-1][1]
+        if prev_c > 0:
+            day_pct = ((last_c - prev_c) / prev_c) * 100.0
+
+    pct_1m: Optional[float] = None
+    pct_1y: Optional[float] = None
+    if len(hist_pts) >= 2:
+        dates = [d for d, _ in hist_pts]
+        closes = [c for _, c in hist_pts]
+        try:
+            first_dt = datetime.strptime(dates[0], "%Y-%m-%d")
+            last_dt = datetime.strptime(dates[-1], "%Y-%m-%d")
+            span_days = (last_dt - first_dt).days
+            last_close = closes[-1]
+
+            def _hist_horizon_pct(days: int, min_span: int) -> Optional[float]:
+                if span_days < min_span or last_close <= 0:
+                    return None
+                target_str = (last_dt - timedelta(days=days)).strftime("%Y-%m-%d")
+                idx = bisect_right(dates, target_str) - 1
+                base_c = closes[idx] if idx >= 0 else closes[0]
+                if base_c <= 0:
+                    return None
+                return ((last_close - base_c) / base_c) * 100.0
+
+            pct_1m = _hist_horizon_pct(30, 14)
+            pct_1y = _hist_horizon_pct(365, 250)
+        except Exception:
+            pass
+
+    day_eur, day_pct_out = _pct_to_eur_and_pct(current_value_eur, day_pct)
+    eur_1m, pct_1m_out = _pct_to_eur_and_pct(current_value_eur, pct_1m)
+    eur_1y, pct_1y_out = _pct_to_eur_and_pct(current_value_eur, pct_1y)
+    return {
+        "day_change_eur": day_eur,
+        "day_change_pct": day_pct_out,
+        "perf_1m_eur": eur_1m,
+        "perf_1m_pct": pct_1m_out,
+        "perf_1y_eur": eur_1y,
+        "perf_1y_pct": pct_1y_out,
+    }
+
+
+def _aggregate_horizon_stats(
+    items: list[dict[str, Any]], eur_key: str, pct_key: str
+) -> tuple[Optional[float], Optional[float]]:
+    valid_eur_sum = 0.0
+    prev_val_sum = 0.0
+    has_any = False
+    for item in items:
+        d_eur = safe_float(item.get(eur_key))
+        d_pct = safe_float(item.get(pct_key))
+        cur_val = safe_float(item.get("current_value_eur")) or 0.0
+        if d_eur is None or d_pct is None or cur_val <= 0:
+            continue
+        prev_val = cur_val - d_eur
+        if prev_val <= 0:
+            continue
+        valid_eur_sum += d_eur
+        prev_val_sum += prev_val
+        has_any = True
+    if not has_any or prev_val_sum <= 0:
+        return None, None
+    return round(valid_eur_sum, 2), round((valid_eur_sum / prev_val_sum) * 100.0, 2)
+
+
 class PortfolioService:
     @staticmethod
     def _serialize_sale(sale: PortfolioSale) -> dict[str, Any]:
@@ -272,6 +375,12 @@ class PortfolioService:
                         "total_cost_eur": 0.0,
                         "total_pnl_eur": 0.0,
                         "total_pnl_pct": None,
+                        "day_pnl_eur": 0.0,
+                        "day_pnl_pct": None,
+                        "perf_1m_eur": 0.0,
+                        "perf_1m_pct": None,
+                        "perf_1y_eur": 0.0,
+                        "perf_1y_pct": None,
                         "positions_count": 0,
                         "equities_count": 0,
                         "etfs_count": 0,
@@ -308,6 +417,9 @@ class PortfolioService:
 
             pnl_eur = current_value_eur - cost_basis_eur
             pnl_pct = ((pnl_eur / cost_basis_eur) * 100.0) if cost_basis_eur > 0 else None
+            horizon_perfs = _compute_period_perf(
+                current_value_eur, quote, info_bundle.get("prices")
+            )
 
             score_global = safe_float((scores.get("global") or {}).get("score"))
             score_val = safe_float((scores.get("valuation") or {}).get("score"))
@@ -332,6 +444,7 @@ class PortfolioService:
                     "cost_basis_eur": round(cost_basis_eur, 2),
                     "pnl_eur": round(pnl_eur, 2),
                     "pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
+                    **horizon_perfs,
                     "weight_pct": 0.0,
                     "score_global": score_global,
                     "score_valuation": score_val,
@@ -389,11 +502,27 @@ class PortfolioService:
             decimals=0,
         )
 
+        day_pnl_eur, day_pnl_pct = _aggregate_horizon_stats(
+            valued_items, "day_change_eur", "day_change_pct"
+        )
+        perf_1m_eur, perf_1m_pct = _aggregate_horizon_stats(
+            valued_items, "perf_1m_eur", "perf_1m_pct"
+        )
+        perf_1y_eur, perf_1y_pct = _aggregate_horizon_stats(
+            valued_items, "perf_1y_eur", "perf_1y_pct"
+        )
+
         stats = {
             "total_value_eur": round(total_value, 2),
             "total_cost_eur": round(total_cost, 2),
             "total_pnl_eur": round(total_pnl, 2),
             "total_pnl_pct": round(total_pnl_pct, 2) if total_pnl_pct is not None else None,
+            "day_pnl_eur": day_pnl_eur,
+            "day_pnl_pct": day_pnl_pct,
+            "perf_1m_eur": perf_1m_eur,
+            "perf_1m_pct": perf_1m_pct,
+            "perf_1y_eur": perf_1y_eur,
+            "perf_1y_pct": perf_1y_pct,
             "positions_count": len(valued_items),
             "equities_count": len({i["ticker"] for i in equities_items}),
             "etfs_count": len({i["ticker"] for i in etfs_items}),
@@ -753,8 +882,9 @@ class PortfolioService:
         mode: str = "real",
         refresh: bool = False,
     ) -> dict[str, Any]:
-        period_norm = period.strip().upper()
-        if period_norm not in {"1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "MAX"}:
+        period_map = {"1J": "1D", "5J": "5D", "1A": "1Y"}
+        period_norm = period_map.get(period.strip().upper(), period.strip().upper())
+        if period_norm not in {"1D", "5D", "1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "MAX"}:
             period_norm = "1Y"
         cur_norm = "USD" if currency.strip().upper() == "USD" else "EUR"
         mode_req = "backtest" if mode.strip().lower() == "backtest" else "real"

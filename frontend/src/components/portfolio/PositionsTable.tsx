@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { Pencil, PlusCircle, TrendingDown, Trash2 } from "lucide-react";
 import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
@@ -8,6 +9,75 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateFR, formatPercent, formatPrice, isValidNumber } from "@/lib/formatters";
 import type { PortfolioPositionItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+type HorizonKey = "total" | "1D" | "1M" | "1Y";
+
+const HORIZON_OPTIONS: { key: HorizonKey; label: string; columnLabel: string }[] = [
+  { key: "total", label: "Total", columnLabel: "+/- Value (Total)" },
+  { key: "1D", label: "1J", columnLabel: "Perf. 1J" },
+  { key: "1M", label: "1M", columnLabel: "Perf. 1M" },
+  { key: "1Y", label: "1A", columnLabel: "Perf. 1A" },
+];
+
+function getPositionHorizonValues(
+  pos: PortfolioPositionItem,
+  horizon: HorizonKey
+): { eur: number | null; pct: number | null } {
+  if (horizon === "1D") {
+    return {
+      eur: isValidNumber(pos.day_change_eur) ? pos.day_change_eur : null,
+      pct: isValidNumber(pos.day_change_pct) ? pos.day_change_pct : null,
+    };
+  }
+  if (horizon === "1M") {
+    return {
+      eur: isValidNumber(pos.perf_1m_eur) ? pos.perf_1m_eur : null,
+      pct: isValidNumber(pos.perf_1m_pct) ? pos.perf_1m_pct : null,
+    };
+  }
+  if (horizon === "1Y") {
+    return {
+      eur: isValidNumber(pos.perf_1y_eur) ? pos.perf_1y_eur : null,
+      pct: isValidNumber(pos.perf_1y_pct) ? pos.perf_1y_pct : null,
+    };
+  }
+  return {
+    eur: pos.pnl_eur,
+    pct: isValidNumber(pos.pnl_pct) ? pos.pnl_pct : null,
+  };
+}
+
+function getAggregateHorizonSummary(
+  positions: PortfolioPositionItem[],
+  horizon: HorizonKey
+): { eur: number; pct: number | null } | null {
+  if (positions.length === 0) return null;
+  if (horizon === "total") {
+    const eurSum = positions.reduce((acc, p) => acc + p.pnl_eur, 0);
+    const costSum = positions.reduce((acc, p) => acc + p.cost_basis_eur, 0);
+    return {
+      eur: eurSum,
+      pct: costSum > 0 ? (eurSum / costSum) * 100 : null,
+    };
+  }
+  let eurSum = 0;
+  let prevSum = 0;
+  let hasAny = false;
+  for (const pos of positions) {
+    const { eur, pct } = getPositionHorizonValues(pos, horizon);
+    if (eur === null || pct === null || pos.current_value_eur <= 0) continue;
+    const prevVal = pos.current_value_eur - eur;
+    if (prevVal <= 0) continue;
+    eurSum += eur;
+    prevSum += prevVal;
+    hasAny = true;
+  }
+  if (!hasAny || prevSum <= 0) return null;
+  return {
+    eur: eurSum,
+    pct: (eurSum / prevSum) * 100,
+  };
+}
 
 interface PositionsTableProps {
   positions: PortfolioPositionItem[];
@@ -25,12 +95,55 @@ export function PositionsTable({
   onDelete,
 }: PositionsTableProps) {
   const { displayCurrency, convertAmount, formatDisplayPrice } = useDisplayCurrency();
+  const [perfHorizon, setPerfHorizon] = useState<HorizonKey>("total");
   const convEur = (v: number) => convertAmount(v, "EUR", displayCurrency) ?? v;
+
+  const activeHorizonMeta =
+    HORIZON_OPTIONS.find((item) => item.key === perfHorizon) || HORIZON_OPTIONS[0];
+  const horizonSummary = getAggregateHorizonSummary(positions, perfHorizon);
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Lignes en Portefeuille ({positions.length})</CardTitle>
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <CardTitle>Lignes en Portefeuille ({positions.length})</CardTitle>
+          {horizonSummary && (
+            <Badge
+              variant={horizonSummary.eur >= 0 ? "emerald" : "coral"}
+              className="tabular-nums"
+            >
+              {activeHorizonMeta.label} : {horizonSummary.eur > 0 ? "+" : ""}
+              {formatPrice(convEur(horizonSummary.eur), displayCurrency)}
+              {horizonSummary.pct !== null
+                ? ` (${formatPercent(horizonSummary.pct, { signed: true })})`
+                : ""}
+            </Badge>
+          )}
+        </div>
+
+        {positions.length > 0 && (
+          <div
+            className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 dark:border-slate-800 dark:bg-slate-950/60"
+            role="group"
+            aria-label="Période de performance des positions"
+          >
+            {HORIZON_OPTIONS.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setPerfHorizon(opt.key)}
+                className={cn(
+                  "rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer",
+                  perfHorizon === opt.key
+                    ? "bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-white"
+                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
       </CardHeader>
       <CardContent className="p-0">
         {positions.length === 0 ? (
@@ -48,7 +161,7 @@ export function PositionsTable({
                   <th className="px-3 py-3 text-right font-semibold">
                     Valeur ({displayCurrency === "USD" ? "$" : "€"})
                   </th>
-                  <th className="px-3 py-3 text-right font-semibold">+/- Value</th>
+                  <th className="px-3 py-3 text-right font-semibold">{activeHorizonMeta.columnLabel}</th>
                   <th className="px-3 py-3 text-right font-semibold">Poids</th>
                   <th className="px-3 py-3 text-right font-semibold">Note /100</th>
                   <th className="px-4 py-3 text-right font-semibold">Actions</th>
@@ -56,7 +169,9 @@ export function PositionsTable({
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                 {positions.map((pos) => {
-                  const pnlPos = pos.pnl_eur >= 0;
+                  const { eur: hEur, pct: hPct } = getPositionHorizonValues(pos, perfHorizon);
+                  const hasPerf = hEur !== null;
+                  const pnlPos = (hEur ?? 0) >= 0;
                   const score = isValidNumber(pos.score_global) ? pos.score_global : null;
                   const scoreVariant =
                     score === null ? "secondary" : score >= 70 ? "emerald" : score >= 45 ? "amber" : "coral";
@@ -114,23 +229,33 @@ export function PositionsTable({
                       </td>
 
                       <td className="px-3 py-3 text-right tabular-nums">
-                        <div
-                          className={cn(
-                            "font-semibold",
-                            pnlPos ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
-                          )}
-                        >
-                          {pos.pnl_eur > 0 ? "+" : ""}
-                          {formatPrice(convEur(pos.pnl_eur), displayCurrency)}
-                        </div>
-                        <div
-                          className={cn(
-                            "text-[11px]",
-                            pnlPos ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
-                          )}
-                        >
-                          {formatPercent(pos.pnl_pct, { signed: true })}
-                        </div>
+                        {hasPerf ? (
+                          <>
+                            <div
+                              className={cn(
+                                "font-semibold",
+                                pnlPos
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : "text-rose-600 dark:text-rose-400"
+                              )}
+                            >
+                              {hEur > 0 ? "+" : ""}
+                              {formatPrice(convEur(hEur), displayCurrency)}
+                            </div>
+                            <div
+                              className={cn(
+                                "text-[11px]",
+                                pnlPos
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : "text-rose-600 dark:text-rose-400"
+                              )}
+                            >
+                              {formatPercent(hPct, { signed: true })}
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
 
                       <td className="px-3 py-3 text-right font-medium tabular-nums text-slate-700 dark:text-slate-200">

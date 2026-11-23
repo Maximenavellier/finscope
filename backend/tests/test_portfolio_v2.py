@@ -672,3 +672,115 @@ def test_portfolio_performance_max_avoids_pre_inception_flat_padding(client, mon
     assert bt["elapsed_years"] == pytest.approx(6.0, abs=0.1)
 
 
+def test_portfolio_daily_1m_1y_perfs_and_1d_5d_chart_periods(client, monkeypatch):
+    dts = pd.date_range(start="2025-10-01", end="2026-11-20", freq="B")
+    nvda_closes = []
+    cw8_closes = []
+    bench_closes = []
+    for i, d in enumerate(dts):
+        ds = d.strftime("%Y-%m-%d")
+        if ds == "2026-11-20":
+            nvda_closes.append(121.0)
+            bench_closes.append(1020.0)
+        elif ds >= "2026-10-22":
+            nvda_closes.append(110.0)
+            bench_closes.append(1000.0)
+        elif ds >= "2026-01-01":
+            nvda_closes.append(100.0)
+            bench_closes.append(1000.0)
+        else:
+            nvda_closes.append(80.0)
+            bench_closes.append(1000.0)
+        cw8_closes.append(200.0 if i >= 0 else 200.0)
+
+    def _make_tk(closes: list[float], name: str, qtype: str):
+        df = pd.DataFrame(
+            {
+                "Open": closes,
+                "High": closes,
+                "Low": closes,
+                "Close": closes,
+                "Volume": [1_000_000] * len(closes),
+                "Stock Splits": [0.0] * len(closes),
+            },
+            index=dts,
+        )
+        return SimpleNamespace(
+            info={
+                "longName": name,
+                "quoteType": qtype,
+                "currency": "EUR",
+                "currentPrice": closes[-1],
+                "previousClose": closes[-2],
+            },
+            fast_info=SimpleNamespace(last_price=closes[-1], previous_close=closes[-2], currency="EUR"),
+            history=lambda **kwargs: df,
+            quarterly_income_stmt=pd.DataFrame(),
+            income_stmt=pd.DataFrame(),
+            quarterly_balance_sheet=pd.DataFrame(),
+            balance_sheet=pd.DataFrame(),
+            quarterly_cashflow=pd.DataFrame(),
+            cashflow=pd.DataFrame(),
+            dividends=pd.Series(dtype=float),
+            earnings_history=None,
+            recommendations_summary=None,
+        )
+
+    tk_nvda = _make_tk(nvda_closes, "NVIDIA Corp", "EQUITY")
+    tk_cw8 = _make_tk(cw8_closes, "Amundi MSCI World", "ETF")
+    tk_bench = _make_tk(bench_closes, "S&P 500", "INDEX")
+    tk_fx = SimpleNamespace(
+        fast_info=SimpleNamespace(last_price=1.0),
+        history=lambda **kwargs: pd.DataFrame({"Close": [1.0]}),
+    )
+
+    monkeypatch.setattr(
+        "app.services.market_data.yf.Ticker",
+        lambda sym: tk_fx
+        if sym == "EURUSD=X"
+        else (tk_bench if sym == "^GSPC" else (tk_cw8 if sym == "CW8.PA" else tk_nvda)),
+    )
+
+    assert client.post(
+        "/api/portfolio/positions",
+        json={"ticker": "NVDA", "envelope": "CTO", "quantity": 1.0, "pru": 90.0, "currency": "EUR", "purchase_date": "2025-10-01"},
+    ).status_code == 201
+    assert client.post(
+        "/api/portfolio/positions",
+        json={"ticker": "CW8.PA", "asset_type": "ETF", "envelope": "PEA", "quantity": 1.0, "pru": 200.0, "currency": "EUR", "purchase_date": "2025-10-01"},
+    ).status_code == 201
+
+    dash_res = client.get("/api/portfolio")
+    assert dash_res.status_code == 200
+    dash = dash_res.json()
+
+    nvda_item = next(p for p in dash["positions"] if p["ticker"] == "NVDA")
+    assert nvda_item["day_change_pct"] == pytest.approx(10.0, abs=0.05)
+    assert nvda_item["day_change_eur"] == pytest.approx(11.0, abs=0.05)
+    assert nvda_item["perf_1m_pct"] == pytest.approx(21.0, abs=0.05)
+    assert nvda_item["perf_1m_eur"] == pytest.approx(21.0, abs=0.05)
+    assert nvda_item["perf_1y_pct"] == pytest.approx(51.25, abs=0.05)
+    assert nvda_item["perf_1y_eur"] == pytest.approx(41.0, abs=0.05)
+
+    assert dash["stats"]["day_pnl_eur"] == pytest.approx(11.0, abs=0.05)
+    # prev day portfolio value = 110 + 200 = 310 => +11 / 310 = +3.55%
+    assert dash["stats"]["day_pnl_pct"] == pytest.approx(3.55, abs=0.05)
+    assert dash["stats"]["perf_1m_eur"] == pytest.approx(21.0, abs=0.05)
+    assert dash["stats"]["perf_1y_eur"] == pytest.approx(41.0, abs=0.05)
+
+    res_1d = client.get("/api/portfolio/performance?period=1D&benchmark=%5EGSPC&currency=EUR")
+    assert res_1d.status_code == 200
+    p1d = res_1d.json()
+    assert p1d["period"] == "1D"
+    assert len(p1d["points"]) == 2
+    assert p1d["portfolio_perf_pct"] == pytest.approx(3.55, abs=0.05)
+    assert p1d["benchmark_perf_pct"] == pytest.approx(2.0, abs=0.05)
+
+    res_5d = client.get("/api/portfolio/performance?period=5D&benchmark=%5EGSPC&currency=EUR")
+    assert res_5d.status_code == 200
+    p5d = res_5d.json()
+    assert p5d["period"] == "5D"
+    assert len(p5d["points"]) >= 5
+
+
+

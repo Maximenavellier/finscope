@@ -13,6 +13,8 @@ import type { PortfolioPerformanceResponse, SearchAssetItem } from "@/lib/types"
 import { cn } from "@/lib/utils";
 
 const PERIODS = [
+  { key: "1D", label: "1J" },
+  { key: "5D", label: "5J" },
   { key: "1M", label: "1M" },
   { key: "3M", label: "3M" },
   { key: "6M", label: "6M" },
