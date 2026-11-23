@@ -291,3 +291,62 @@ def test_stock_score_history_and_news_endpoints(client, monkeypatch):
     assert len(nw["items"]) == 2
     assert nw["items"][0]["title"] == "Apple unveils AI chips"
     assert nw["items"][1]["publisher"] == "CNBC"
+
+
+def test_rate_limited_quote_resolves_names_logos_and_repairs_cache(db_session, monkeypatch):
+    from app.services.cache_service import cache_service
+    from app.services.market_data import market_data_service
+
+    dts = pd.date_range(start="2025-11-01", end="2026-11-20", freq="B")
+    df = pd.DataFrame({"Close": [100.0] * len(dts)}, index=dts)
+    empty_info_tk = SimpleNamespace(
+        info={},
+        fast_info=SimpleNamespace(last_price=100.0, previous_close=99.0, currency="EUR"),
+        history=lambda **kwargs: df,
+    )
+    monkeypatch.setattr("app.services.market_data.yf.Ticker", lambda sym: empty_info_tk)
+    monkeypatch.setattr(
+        "app.services.market_data.MarketDataService._fetch_yf_search_name",
+        lambda self, sym: "Custom Searched Co" if sym == "CUSTOMX" else None,
+    )
+
+    # 1) Live fetch when Yahoo tk.info == {} (Render rate-limit simulation)
+    expected = {
+        "NVDA": ("NVIDIA Corporation", "EQUITY", False, "nvidia.com"),
+        "PUST.PA": ("Amundi PEA Nasdaq-100 UCITS ETF Acc", "ETF", True, "amundietf.fr"),
+        "ESE.PA": ("BNP Paribas Easy S&P 500 UCITS ETF", "ETF", True, "easy.bnpparibas.fr"),
+        "18MH.DU": ("Amundi PEA MSCI Emerging Markets UCITS ETF Acc", "ETF", True, "amundietf.fr"),
+    }
+    for sym, (exp_name, exp_type, exp_pea, exp_domain) in expected.items():
+        q = market_data_service.get_quote_and_info(db_session, sym, refresh=True)
+        assert q["name"] == exp_name
+        assert q["asset_type"] == exp_type
+        assert q["pea_eligible"] is exp_pea
+        assert q["logo_url"] and exp_domain in q["logo_url"]
+
+    # Unseeded ticker resolves via Yahoo Search fallback
+    custom_q = market_data_service.get_quote_and_info(db_session, "CUSTOMX", refresh=True)
+    assert custom_q["name"] == "Custom Searched Co"
+
+    # 2) Cache-hit repair when an existing cache entry stored ticker symbol as name and no logo_url
+    for sym, (exp_name, exp_type, exp_pea, exp_domain) in expected.items():
+        cache_service.set(
+            db_session,
+            f"quote:{sym}",
+            "quote",
+            {
+                "ticker": sym,
+                "name": sym,
+                "asset_type": "EQUITY",
+                "currency": "EUR",
+                "region": "EU",
+                "pea_eligible": False,
+                "price": 100.0,
+                "logo_url": None,
+            },
+        )
+        repaired = market_data_service.get_quote_and_info(db_session, sym, refresh=False)
+        assert repaired["name"] == exp_name
+        assert repaired["asset_type"] == exp_type
+        assert repaired["pea_eligible"] is exp_pea
+        assert repaired["logo_url"] and exp_domain in repaired["logo_url"]

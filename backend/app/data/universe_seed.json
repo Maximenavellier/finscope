@@ -66,6 +66,12 @@
   {"ticker": "RACE.MI", "name": "Ferrari N.V.", "asset_type": "EQUITY", "region": "EU", "pea_eligible": true, "sector": "Consumer Cyclical", "industry": "Auto Manufacturers", "peers": ["RMS.PA", "MC.PA", "P911.DE", "TSLA"]},
   {"ticker": "CW8.PA", "name": "Amundi MSCI World UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["ESE.PA", "VWCE.DE", "SPY", "QQQ"]},
   {"ticker": "ESE.PA", "name": "BNP Paribas Easy S&P 500 UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["CW8.PA", "SPY", "QQQ", "VWCE.DE"]},
+  {"ticker": "PUST.PA", "name": "Amundi PEA Nasdaq-100 UCITS ETF Acc", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["QQQ", "PANX.PA", "ESE.PA", "CW8.PA"]},
+  {"ticker": "18MH.DU", "name": "Amundi PEA MSCI Emerging Markets UCITS ETF Acc", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["PAEEM.PA", "CW8.PA", "WPEA.PA", "VWCE.DE"]},
+  {"ticker": "WPEA.PA", "name": "iShares MSCI World Swap PEA UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["CW8.PA", "ESE.PA", "VWCE.DE"]},
+  {"ticker": "PAEEM.PA", "name": "Amundi PEA MSCI Emerging Markets UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["18MH.DU", "CW8.PA", "WPEA.PA"]},
+  {"ticker": "PE500.PA", "name": "Amundi PEA S&P 500 UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["ESE.PA", "SPY", "CW8.PA"]},
+  {"ticker": "PANX.PA", "name": "Amundi PEA Nasdaq-100 UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": true, "sector": null, "industry": null, "peers": ["PUST.PA", "QQQ", "ESE.PA"]},
   {"ticker": "SPY", "name": "SPDR S&P 500 ETF Trust", "asset_type": "ETF", "region": "US", "pea_eligible": false, "sector": null, "industry": null, "peers": ["QQQ", "ESE.PA", "CW8.PA", "VWCE.DE"]},
   {"ticker": "QQQ", "name": "Invesco QQQ Trust", "asset_type": "ETF", "region": "US", "pea_eligible": false, "sector": null, "industry": null, "peers": ["SPY", "ESE.PA", "CW8.PA"]},
   {"ticker": "VWCE.DE", "name": "Vanguard FTSE All-World UCITS ETF", "asset_type": "ETF", "region": "EU", "pea_eligible": false, "sector": null, "industry": null, "peers": ["CW8.PA", "ESE.PA", "SPY"]}

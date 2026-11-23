@@ -60,6 +60,7 @@ KNOWN_PEA_ETFS = {
     "PAEEM.PA",
     "PANX.PA",
     "PUST.PA",
+    "18MH.DU",
     "PTPXH.PA",
     "RS2K.PA",
     "PCEU.PA",
@@ -247,6 +248,18 @@ _KNOWN_BRAND_DOMAINS: tuple[tuple[str, str], ...] = (
     ("totalenergies", "totalenergies.com"),
 )
 
+_KNOWN_TICKER_DOMAINS: dict[str, str] = {
+    "PUST.PA": "amundietf.fr",
+    "18MH.DU": "amundietf.fr",
+    "CW8.PA": "amundietf.fr",
+    "PAEEM.PA": "amundietf.fr",
+    "PE500.PA": "amundietf.fr",
+    "PANX.PA": "amundietf.fr",
+    "EWLD.PA": "amundietf.fr",
+    "ESE.PA": "easy.bnpparibas.fr",
+    "WPEA.PA": "ishares.com",
+}
+
 
 def build_logo_url(
     ticker: str,
@@ -270,6 +283,9 @@ def build_logo_url(
     for keyword, domain in _KNOWN_BRAND_DOMAINS:
         if keyword in lower_name:
             return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    ticker_domain = _KNOWN_TICKER_DOMAINS.get(normalize_ticker(ticker))
+    if ticker_domain:
+        return f"https://www.google.com/s2/favicons?domain={ticker_domain}&sz=128"
     return None
 
 
@@ -361,6 +377,62 @@ class MarketDataService:
         except Exception as exc:
             logger.warning("Finnhub request failed for %s: %s", path, exc)
             return None
+
+    def _fetch_yf_search_name(self, sym: str) -> Optional[str]:
+        """Fallback lightweight Yahoo Search lookup when quoteSummary/info is unavailable."""
+        norm = normalize_ticker(sym)
+        if not norm:
+            return None
+        try:
+            with httpx.Client(timeout=4.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                resp = client.get(
+                    "https://query1.finance.yahoo.com/v1/finance/search",
+                    params={"q": norm, "quotesCount": 5, "newsCount": 0},
+                )
+                if resp.status_code != 200:
+                    return None
+                quotes = (resp.json() or {}).get("quotes") or []
+                for entry in quotes:
+                    if normalize_ticker(str(entry.get("symbol") or "")) == norm:
+                        candidate = str(entry.get("longname") or entry.get("shortname") or "").strip()
+                        if candidate and candidate.upper() != norm:
+                            return candidate[:255]
+                for entry in quotes:
+                    candidate = str(entry.get("longname") or entry.get("shortname") or "").strip()
+                    if candidate and candidate.upper() != norm:
+                        return candidate[:255]
+        except Exception:
+            return None
+        return None
+
+    def _resolve_quote_name(
+        self,
+        db: Session,
+        sym: str,
+        initial_name: Optional[str],
+        fh_name: Optional[str] = None,
+    ) -> str:
+        """Resolve a non-ticker display name via info -> Finnhub -> DB Asset -> seed -> Yahoo Search."""
+        for candidate in (initial_name, fh_name):
+            cleaned = str(candidate or "").strip()
+            if cleaned and cleaned.upper() != sym:
+                return cleaned[:255]
+
+        existing_asset = db.get(Asset, sym)
+        if existing_asset and existing_asset.name and existing_asset.name.strip().upper() != sym:
+            return existing_asset.name.strip()[:255]
+
+        seed_item = _seed_by_ticker().get(sym)
+        if seed_item and seed_item.get("name"):
+            seed_name = str(seed_item["name"]).strip()
+            if seed_name and seed_name.upper() != sym:
+                return seed_name[:255]
+
+        searched = self._fetch_yf_search_name(sym)
+        if searched:
+            return searched
+
+        return sym
 
     def _fmp_get(self, url_or_path: str, params: Optional[dict[str, Any]] = None) -> Optional[Any]:
         settings = get_settings()
@@ -884,45 +956,87 @@ class MarketDataService:
         future_dates = sorted(d for d in candidates if d >= today)
         return future_dates[0].isoformat() if future_dates else None
 
+    def _repair_cached_quote_payload(self, db: Session, sym: str, payload: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
+        repaired = False
+        cur_name = str(payload.get("name") or "").strip()
+        resolved_name = self._resolve_quote_name(db, sym, cur_name)
+        if resolved_name != cur_name:
+            payload["name"] = resolved_name
+            repaired = True
+
+        if not payload.get("logo_url"):
+            new_logo = build_logo_url(
+                sym,
+                website=payload.get("website"),
+                name=payload.get("name"),
+            )
+            if new_logo:
+                payload["logo_url"] = new_logo
+                repaired = True
+
+        seed_item = _seed_by_ticker().get(sym)
+        if seed_item:
+            seed_region = seed_item.get("region")
+            seed_pea = bool(seed_item.get("pea_eligible", False))
+            if seed_region and payload.get("region") != seed_region:
+                payload["region"] = seed_region
+                repaired = True
+            if bool(payload.get("pea_eligible", False)) != seed_pea:
+                payload["pea_eligible"] = seed_pea
+                repaired = True
+
+        detected = detect_asset_type(payload.get("asset_type"), payload.get("name"), sym)
+        if payload.get("asset_type") != detected:
+            repaired = True
+        payload["asset_type"] = detected
+        if detected == "ETF":
+            payload["sector"] = "ETF"
+            payload["next_earnings_date"] = None
+            payload["days_until_earnings"] = None
+        else:
+            days = self._compute_days_until_earnings(payload.get("next_earnings_date"))
+            if days is None:
+                payload["next_earnings_date"] = None
+            payload["days_until_earnings"] = days
+
+        if payload.get("fx_to_eur_rate") is None or payload.get("price_eur") is None:
+            fx_eur, px_eur = self._compute_eur_estimate_fields(
+                db, payload.get("currency"), safe_float(payload.get("price"))
+            )
+            payload["fx_to_eur_rate"] = fx_eur
+            payload["price_eur"] = px_eur
+
+        if persist and repaired:
+            try:
+                cache_service.set(db, f"quote:{sym}", "quote", payload)
+            except Exception:
+                pass
+            try:
+                asset = db.get(Asset, sym)
+                if asset is not None:
+                    changed_asset = False
+                    if payload.get("name") and str(payload["name"]).upper() != sym and asset.name != payload["name"]:
+                        asset.name = str(payload["name"])[:255]
+                        changed_asset = True
+                    if payload.get("logo_url") and not asset.logo_url:
+                        asset.logo_url = payload["logo_url"]
+                        changed_asset = True
+                    if asset.asset_type != detected:
+                        asset.asset_type = detected
+                        changed_asset = True
+                    if changed_asset:
+                        db.commit()
+            except Exception:
+                db.rollback()
+        return payload
+
     def get_quote_and_info(self, db: Session, ticker: str, refresh: bool = False) -> dict[str, Any]:
         sym = normalize_ticker(ticker)
         cache_key = f"quote:{sym}"
         if not refresh:
             cached = cache_service.get(db, cache_key)
             if cached is not None:
-                payload = dict(cached.payload)
-                cur_name = str(payload.get("name") or "").strip()
-                if not cur_name or cur_name.upper() == sym:
-                    existing_asset = db.get(Asset, sym)
-                    if existing_asset and existing_asset.name and existing_asset.name.strip().upper() != sym:
-                        payload["name"] = existing_asset.name
-                    else:
-                        seed_item = get_seed_index().get(sym)
-                        if seed_item and seed_item.get("name"):
-                            payload["name"] = seed_item["name"]
-                if not payload.get("logo_url"):
-                    payload["logo_url"] = build_logo_url(
-                        sym,
-                        website=payload.get("website"),
-                        name=payload.get("name"),
-                    )
-                detected = detect_asset_type(payload.get("asset_type"), payload.get("name"), sym)
-                payload["asset_type"] = detected
-                if detected == "ETF":
-                    payload["sector"] = "ETF"
-                    payload["next_earnings_date"] = None
-                    payload["days_until_earnings"] = None
-                else:
-                    days = self._compute_days_until_earnings(payload.get("next_earnings_date"))
-                    if days is None:
-                        payload["next_earnings_date"] = None
-                    payload["days_until_earnings"] = days
-                if payload.get("fx_to_eur_rate") is None or payload.get("price_eur") is None:
-                    fx_eur, px_eur = self._compute_eur_estimate_fields(
-                        db, payload.get("currency"), safe_float(payload.get("price"))
-                    )
-                    payload["fx_to_eur_rate"] = fx_eur
-                    payload["price_eur"] = px_eur
+                payload = self._repair_cached_quote_payload(db, sym, dict(cached.payload), persist=True)
                 payload["updated_at"] = cached.updated_at.isoformat()
                 payload["is_stale"] = cached.is_stale
                 return payload
@@ -966,12 +1080,11 @@ class MarketDataService:
                 if not closes.empty:
                     price = safe_float(closes.iloc[-1])
 
-            name = info.get("longName") or info.get("shortName") or info.get("displayName")
-            if price is None and not name:
+            raw_name = info.get("longName") or info.get("shortName") or info.get("displayName")
+            if price is None and not raw_name:
                 raise ValueError(f"Ticker '{sym}' not found")
 
             quote_type = str(info.get("quoteType") or "").upper()
-            asset_type = detect_asset_type(quote_type, name, sym)
 
             prev_close = (
                 safe_float(info.get("regularMarketPreviousClose"))
@@ -1008,17 +1121,8 @@ class MarketDataService:
                 fh_name = fh_profile.get("name")
                 fh_weburl = fh_profile.get("weburl")
 
-            if not name or str(name).strip().upper() == sym:
-                if fh_name and str(fh_name).strip().upper() != sym:
-                    name = str(fh_name).strip()
-                else:
-                    existing_asset = db.get(Asset, sym)
-                    if existing_asset and existing_asset.name and existing_asset.name.strip().upper() != sym:
-                        name = existing_asset.name
-                    else:
-                        seed_item = get_seed_index().get(sym)
-                        if seed_item and seed_item.get("name"):
-                            name = seed_item["name"]
+            name = self._resolve_quote_name(db, sym, raw_name, fh_name=fh_name)
+            asset_type = detect_asset_type(quote_type, name, sym)
 
             website = info.get("website") or fh_weburl
             logo_url = build_logo_url(sym, finnhub_logo=fh_logo, website=website, name=name)
@@ -1128,7 +1232,7 @@ class MarketDataService:
             logger.warning("Failed fetching quote for %s: %s", sym, exc)
             stale = cache_service.get(db, cache_key, allow_stale=True)
             if stale is not None:
-                payload = dict(stale.payload)
+                payload = self._repair_cached_quote_payload(db, sym, dict(stale.payload), persist=False)
                 payload["updated_at"] = stale.updated_at.isoformat()
                 payload["is_stale"] = True
                 return payload

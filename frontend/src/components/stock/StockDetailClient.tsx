@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { BarChart3, Calculator, LayoutGrid, Target, Users } from "lucide-react";
 import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
@@ -52,69 +52,159 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [tabLoading, setTabLoading] = useState<TabId | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [hasOpenedPeers, setHasOpenedPeers] = useState(false);
   const [peersRefreshKey, setPeersRefreshKey] = useState(0);
 
+  const requestIdRef = useRef(0);
+  const openedTabsRef = useRef<Set<TabId>>(new Set(["overview"]));
+
+  const loadTabData = useCallback(
+    async (tabId: TabId, forceRefresh = false, reqId?: number) => {
+      const activeReqId = reqId ?? requestIdRef.current;
+      if (tabId === "finance") {
+        setTabLoading("finance");
+        try {
+          const [fundRes, segRes] = await Promise.allSettled([
+            getStockFundamentals(ticker, "annual", false, forceRefresh),
+            getStockSegments(ticker, forceRefresh),
+          ]);
+          if (requestIdRef.current !== activeReqId) return;
+          if (fundRes.status === "fulfilled") setFundamentals(fundRes.value);
+          if (segRes.status === "fulfilled") setSegments(segRes.value);
+        } finally {
+          if (requestIdRef.current === activeReqId) setTabLoading(null);
+        }
+      } else if (tabId === "valuation") {
+        setTabLoading("valuation");
+        try {
+          const fundRes = await Promise.allSettled([
+            getStockFundamentals(ticker, "annual", false, forceRefresh),
+          ]);
+          if (requestIdRef.current !== activeReqId) return;
+          if (fundRes[0].status === "fulfilled") setFundamentals(fundRes[0].value);
+        } finally {
+          if (requestIdRef.current === activeReqId) setTabLoading(null);
+        }
+      } else if (tabId === "analysts") {
+        setTabLoading("analysts");
+        try {
+          const [anRes, surpRes] = await Promise.allSettled([
+            getStockAnalysts(ticker, forceRefresh),
+            getStockSurprises(ticker, forceRefresh),
+          ]);
+          if (requestIdRef.current !== activeReqId) return;
+          if (anRes.status === "fulfilled") setAnalysts(anRes.value);
+          if (surpRes.status === "fulfilled") setSurprises(surpRes.value);
+        } finally {
+          if (requestIdRef.current === activeReqId) setTabLoading(null);
+        }
+      }
+    },
+    [ticker]
+  );
+
   const loadAll = useCallback(
     async (forceRefresh = false) => {
+      const reqId = ++requestIdRef.current;
       if (forceRefresh) {
         setRefreshing(true);
       } else {
         setLoading(true);
+        setOverview(null);
+        setPrices(null);
+        setFundamentals(null);
+        setSurprises(null);
+        setSegments(null);
+        setAnalysts(null);
+        setScoreHistory(null);
+        setNews(null);
       }
       setError(null);
 
       try {
-        const [ovRes, pxRes, fundRes, surpRes, segRes, anRes, shRes, newsRes] =
-          await Promise.allSettled([
-            getStockOverview(ticker, forceRefresh),
-            getStockPrices(ticker, "5Y", displayCurrency, forceRefresh),
-            getStockFundamentals(ticker, "annual", false, forceRefresh),
-            getStockSurprises(ticker, forceRefresh),
-            getStockSegments(ticker, forceRefresh),
-            getStockAnalysts(ticker, forceRefresh),
-            getStockScoreHistory(ticker, forceRefresh),
-            getStockNews(ticker, 5, forceRefresh),
-          ]);
+        // Phase 1: Overview first (populates backend caches in a single call and avoids Render 512MB RAM spikes)
+        const ov = await getStockOverview(ticker, forceRefresh);
+        if (requestIdRef.current !== reqId) return;
+        setOverview(ov);
+        setLoading(false);
 
-        if (ovRes.status === "rejected") {
-          throw ovRes.reason;
-        }
-        setOverview(ovRes.value);
+        // Phase 2: Overview tab data staggered in batches of max 2 concurrent requests
+        const [pxRes, shRes] = await Promise.allSettled([
+          getStockPrices(ticker, "5Y", displayCurrency, forceRefresh),
+          getStockScoreHistory(ticker, forceRefresh),
+        ]);
+        if (requestIdRef.current !== reqId) return;
         if (pxRes.status === "fulfilled") setPrices(pxRes.value);
-        if (fundRes.status === "fulfilled") setFundamentals(fundRes.value);
-        if (surpRes.status === "fulfilled") setSurprises(surpRes.value);
-        if (segRes.status === "fulfilled") setSegments(segRes.value);
-        if (anRes.status === "fulfilled") setAnalysts(anRes.value);
         if (shRes.status === "fulfilled") setScoreHistory(shRes.value);
-        if (newsRes.status === "fulfilled") setNews(newsRes.value);
 
-        if (forceRefresh && hasOpenedPeers) {
-          setPeersRefreshKey((k) => k + 1);
+        const [newsRes, surpRes] = await Promise.allSettled([
+          getStockNews(ticker, 5, forceRefresh),
+          ov.info.asset_type === "ETF"
+            ? Promise.resolve(null)
+            : getStockSurprises(ticker, forceRefresh),
+        ]);
+        if (requestIdRef.current !== reqId) return;
+        if (newsRes.status === "fulfilled") setNews(newsRes.value);
+        if (surpRes.status === "fulfilled" && surpRes.value) setSurprises(surpRes.value);
+
+        // Phase 3 on forceRefresh: refresh already-opened lazy tabs sequentially
+        if (forceRefresh) {
+          if (openedTabsRef.current.has("finance")) {
+            await loadTabData("finance", true, reqId);
+          } else if (openedTabsRef.current.has("valuation")) {
+            await loadTabData("valuation", true, reqId);
+          }
+          if (openedTabsRef.current.has("analysts")) {
+            await loadTabData("analysts", true, reqId);
+          }
+          if (hasOpenedPeers && requestIdRef.current === reqId) {
+            setPeersRefreshKey((k) => k + 1);
+          }
         }
       } catch (err) {
+        if (requestIdRef.current !== reqId) return;
         setError(
           err instanceof Error
             ? err.message
             : `Impossible de charger les données pour ${ticker}.`
         );
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (requestIdRef.current === reqId) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [ticker, hasOpenedPeers]
+    [ticker, displayCurrency, hasOpenedPeers, loadTabData]
   );
 
   useEffect(() => {
     setActiveTab("overview");
     setHasOpenedPeers(false);
+    openedTabsRef.current = new Set(["overview"]);
     loadAll(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker]);
+
+  const handleSelectTab = (tabId: TabId) => {
+    openedTabsRef.current.add(tabId);
+    setActiveTab(tabId);
+    if (tabId === "peers") {
+      setHasOpenedPeers(true);
+      return;
+    }
+    if (tabId === "finance" && (!fundamentals || !segments)) {
+      loadTabData("finance", false);
+    } else if (tabId === "valuation" && !fundamentals) {
+      loadTabData("valuation", false);
+    } else if (tabId === "analysts" && !analysts) {
+      loadTabData("analysts", false);
+    }
+  };
 
   if (loading && !overview) {
     return (
@@ -180,10 +270,7 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => {
-                  if (tab.id === "peers") setHasOpenedPeers(true);
-                  setActiveTab(tab.id);
-                }}
+                onClick={() => handleSelectTab(tab.id)}
                 className={cn(
                   "inline-flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-semibold whitespace-nowrap transition-colors cursor-pointer",
                   active
@@ -212,32 +299,44 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
       )}
 
       {!isEtf && activeTab === "finance" && (
-        <FinanceGrowthTab
-          ticker={overview.info.ticker}
-          fundamentals={fundamentals}
-          segments={segments}
-        />
+        tabLoading === "finance" && !fundamentals ? (
+          <Skeleton className="h-96 w-full" />
+        ) : (
+          <FinanceGrowthTab
+            ticker={overview.info.ticker}
+            fundamentals={fundamentals}
+            segments={segments}
+          />
+        )
       )}
 
       {!isEtf && activeTab === "analysts" && (
-        <AnalystsTab
-          ticker={overview.info.ticker}
-          analysts={analysts}
-          surprises={surprises}
-          currency={overview.info.currency}
-        />
+        tabLoading === "analysts" && !analysts ? (
+          <Skeleton className="h-96 w-full" />
+        ) : (
+          <AnalystsTab
+            ticker={overview.info.ticker}
+            analysts={analysts}
+            surprises={surprises}
+            currency={overview.info.currency}
+          />
+        )
       )}
 
       {!isEtf && activeTab === "valuation" && (
-        <ValuationTab
-          key={overview.info.ticker}
-          ticker={overview.info.ticker}
-          fairValue={overview.fair_value}
-          fundamentals={fundamentals}
-          currency={overview.info.currency}
-          currentPe={overview.scores?.metrics?.pe ?? overview.info.pe}
-          currentPFcf={overview.scores?.metrics?.p_fcf}
-        />
+        tabLoading === "valuation" && !fundamentals ? (
+          <Skeleton className="h-96 w-full" />
+        ) : (
+          <ValuationTab
+            key={overview.info.ticker}
+            ticker={overview.info.ticker}
+            fairValue={overview.fair_value}
+            fundamentals={fundamentals}
+            currency={overview.info.currency}
+            currentPe={overview.scores?.metrics?.pe ?? overview.info.pe}
+            currentPFcf={overview.scores?.metrics?.p_fcf}
+          />
+        )
       )}
 
       {!isEtf && hasOpenedPeers && (
