@@ -6,6 +6,7 @@ import { Briefcase, Plus, RefreshCw, Star, TrendingUp } from "lucide-react";
 import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
 import { ClosedSalesSection } from "@/components/portfolio/ClosedSalesSection";
 import { DcaAssistantCard } from "@/components/portfolio/DcaAssistantCard";
+import { DividendsCard } from "@/components/portfolio/DividendsCard";
 import { ExportBackupMenu } from "@/components/portfolio/ExportBackupMenu";
 import { PortfolioDonutCard } from "@/components/portfolio/PortfolioDonutCard";
 import { PortfolioPerformanceCard } from "@/components/portfolio/PortfolioPerformanceCard";
@@ -294,6 +295,8 @@ export function PortfolioClient() {
             }}
             onDelete={handleDeletePosition}
           />
+
+          <DividendsCard dividends={portfolio.dividends} />
 
           <ClosedSalesSection
             sales={portfolio.sales || []}

@@ -3,10 +3,19 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { InfoTooltip } from "@/components/stock/InfoTooltip";
+import { NewsAndEarningsCard } from "@/components/stock/NewsAndEarningsCard";
 import { PriceChartCard } from "@/components/stock/PriceChartCard";
+import { ScoreHistoryCard } from "@/components/stock/ScoreHistoryCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMultiple, formatPercent } from "@/lib/formatters";
-import type { PriceHistoryResponse, ScoresBundle, StockInfoResponse } from "@/lib/types";
+import type {
+  PriceHistoryResponse,
+  ScoreHistoryResponse,
+  ScoresBundle,
+  StockInfoResponse,
+  StockNewsResponse,
+  SurprisesResponse,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface OverviewTabProps {
@@ -14,6 +23,9 @@ interface OverviewTabProps {
   scores: ScoresBundle;
   prices: PriceHistoryResponse | null;
   fairValue?: number | null;
+  scoreHistory?: ScoreHistoryResponse | null;
+  surprises?: SurprisesResponse | null;
+  news?: StockNewsResponse | null;
 }
 
 interface KpiItem {
@@ -22,7 +34,15 @@ interface KpiItem {
   tooltip: string;
 }
 
-export function OverviewTab({ info, scores, prices, fairValue }: OverviewTabProps) {
+export function OverviewTab({
+  info,
+  scores,
+  prices,
+  fairValue,
+  scoreHistory,
+  surprises,
+  news,
+}: OverviewTabProps) {
   const [descExpanded, setDescExpanded] = useState(false);
   const m = scores.metrics || {};
   const isEtf = info.asset_type === "ETF";
@@ -207,6 +227,16 @@ export function OverviewTab({ info, scores, prices, fairValue }: OverviewTabProp
       )}
 
       <PriceChartCard ticker={info.ticker} initialPrices={prices} fairValue={fairValue} />
+
+      <ScoreHistoryCard scoreHistory={scoreHistory ?? null} currency={info.currency} />
+
+      <NewsAndEarningsCard
+        ticker={info.ticker}
+        surprises={surprises ?? null}
+        news={news ?? null}
+        currency={info.currency}
+        isEtf={isEtf}
+      />
     </div>
   );
 }

@@ -18,11 +18,13 @@ import type {
   ProjectionDefaultsResponse,
   ProjectionRequest,
   ProjectionResponse,
+  ScoreHistoryResponse,
   ScreenerQueryParams,
   ScreenerResponse,
   SearchResponse,
   SeedStatusResponse,
   SegmentsResponse,
+  StockNewsResponse,
   StockOverviewResponse,
   SurprisesResponse,
   SystemStatusResponse,
@@ -247,6 +249,25 @@ export async function getStockSegments(ticker: string, refresh = false): Promise
   );
 }
 
+export async function getStockNews(
+  ticker: string,
+  limit = 5,
+  refresh = false
+): Promise<StockNewsResponse> {
+  return executeFetch<StockNewsResponse>(
+    `/api/stocks/${encodeURIComponent(ticker)}/news?limit=${limit}&refresh=${refresh}`
+  );
+}
+
+export async function getStockScoreHistory(
+  ticker: string,
+  refresh = false
+): Promise<ScoreHistoryResponse> {
+  return executeFetch<ScoreHistoryResponse>(
+    `/api/stocks/${encodeURIComponent(ticker)}/score-history?refresh=${refresh}`
+  );
+}
+
 export async function getStockPeers(
   ticker: string,
   options?: { extra?: string[]; exclude?: string[]; refresh?: boolean }
@@ -324,6 +345,7 @@ export async function createPortfolioPosition(body: {
   invested_amount?: number;
   currency?: string;
   purchase_date?: string;
+  fees_eur?: number;
   notes?: string;
 }): Promise<PortfolioPositionItem> {
   return executeFetch<PortfolioPositionItem>("/api/portfolio/positions", {
@@ -343,6 +365,7 @@ export async function updatePortfolioPosition(
     clear_quantity_pru?: boolean;
     currency?: string;
     purchase_date?: string;
+    fees_eur?: number;
     notes?: string;
   }
 ): Promise<PortfolioPositionItem> {
@@ -360,6 +383,7 @@ export async function reinforcePortfolioPosition(
     price: number;
     currency: "EUR" | "USD";
     purchase_date?: string;
+    fees_eur?: number;
     notes?: string;
   }
 ): Promise<PortfolioPositionItem> {

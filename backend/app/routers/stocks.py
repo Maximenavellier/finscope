@@ -10,6 +10,7 @@ from app.schemas.market import (
     PriceHistoryResponse,
     SegmentsResponse,
     StockInfoResponse,
+    StockNewsResponse,
     SurprisesResponse,
 )
 from app.schemas.scoring import (
@@ -18,12 +19,14 @@ from app.schemas.scoring import (
     PeerOverrideRequest,
     PeerOverridesResponse,
     PeersComparisonResponse,
+    ScoreHistoryResponse,
     StockOverviewResponse,
 )
 from app.services.cache_service import cache_service
 from app.services.market_data import market_data_service, normalize_ticker
 from app.services.peers_service import peers_service, update_peer_override
 from app.services.scoring_engine import (
+    compute_score_history,
     get_cached_sector_averages,
     persist_asset_scores,
     score_equity,
@@ -265,3 +268,44 @@ def put_stock_peer_override(
         return update_peer_override(db, ticker, body.peer_ticker, body.action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{ticker}/news", response_model=StockNewsResponse)
+def get_stock_news(
+    ticker: str,
+    limit: int = Query(5, ge=1, le=15),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    return market_data_service.get_stock_news(db, ticker, limit=limit, refresh=refresh)
+
+
+@router.get("/{ticker}/score-history", response_model=ScoreHistoryResponse)
+def get_stock_score_history(
+    ticker: str,
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    sym = normalize_ticker(ticker)
+    try:
+        quote = market_data_service.get_quote_and_info(db, sym, refresh=refresh)
+        prices: Optional[dict[str, Any]] = None
+        try:
+            prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=refresh)
+        except Exception:
+            prices = None
+
+        if quote.get("asset_type") == "ETF":
+            fundamentals = {"annual": []}
+            current_scores = score_etf(quote, prices or {"points": []})
+        else:
+            fundamentals = market_data_service.get_fundamentals(db, sym, refresh=refresh)
+            sector_avg = get_cached_sector_averages(
+                db, quote.get("sector"), quote.get("industry"), sym
+            )
+            current_scores = score_equity(quote, fundamentals, sector_averages=sector_avg)
+
+        persist_asset_scores(db, sym, current_scores)
+        return compute_score_history(db, sym, quote, fundamentals, prices, current_scores)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

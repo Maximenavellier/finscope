@@ -168,3 +168,24 @@ class PeerOverridesResponse(BaseModel):
     ticker: str
     added: list[str] = Field(default_factory=list)
     excluded: list[str] = Field(default_factory=list)
+
+
+class ScoreHistoryPoint(BaseModel):
+    label: str
+    date: str
+    score_global: Optional[float] = None
+    score_valuation: Optional[float] = None
+    score_growth: Optional[float] = None
+    score_quality: Optional[float] = None
+    score_health: Optional[float] = None
+    price: Optional[float] = None
+    source: Literal["annual", "snapshot", "live"] = "annual"
+
+
+class ScoreHistoryResponse(BaseModel):
+    ticker: str
+    asset_type: str = "EQUITY"
+    points: list[ScoreHistoryPoint] = Field(default_factory=list)
+    trend_delta_pts: Optional[float] = None
+    trend_label: str = "Stable"
+    updated_at: str

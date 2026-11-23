@@ -68,6 +68,7 @@ class PortfolioPosition(Base):
     invested_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     currency: Mapped[str] = mapped_column(String(16), nullable=False, default="EUR")
     purchase_date: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    fees_eur: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -109,6 +110,7 @@ class PortfolioLot(Base):
     currency: Mapped[str] = mapped_column(String(16), nullable=False, default="EUR")
     price_eur: Mapped[float] = mapped_column(Float, nullable=False)
     amount_eur: Mapped[float] = mapped_column(Float, nullable=False)
+    fees_eur: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     tx_date: Mapped[str] = mapped_column(String(16), nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
@@ -143,3 +145,18 @@ class UserSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
+
+
+class ScoreSnapshot(Base):
+    __tablename__ = "score_snapshots"
+    __table_args__ = (UniqueConstraint("ticker", "snapshot_date", name="uq_score_snapshot_ticker_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    snapshot_date: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    score_global: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    score_valuation: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    score_growth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    score_quality: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    score_health: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

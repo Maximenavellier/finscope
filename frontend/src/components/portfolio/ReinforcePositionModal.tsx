@@ -34,6 +34,7 @@ export function ReinforcePositionModal({
   const [buyCurrency, setBuyCurrency] = useState<"EUR" | "USD">("EUR");
   const [unitPrice, setUnitPrice] = useState("");
   const [purchaseDate, setPurchaseDate] = useState("");
+  const [feesEur, setFeesEur] = useState("1");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +47,7 @@ export function ReinforcePositionModal({
     setQtyInput("");
     setBuyCurrency("EUR");
     setPurchaseDate(todayIso());
+    setFeesEur(position.envelope === "CTO" ? "1" : "0");
     setNotes("");
 
     const liveEur = convertAmount(position.current_price, position.asset_currency, "EUR");
@@ -93,8 +95,9 @@ export function ReinforcePositionModal({
     }
 
     const oldCostEur = position.cost_basis_eur || 0;
+    const feesNum = Math.max(0, Number(feesEur.replace(",", ".")) || 0);
     const newTotalQty = oldQty + addedQty;
-    const newTotalCostEur = oldCostEur + addedEur;
+    const newTotalCostEur = oldCostEur + addedEur + feesNum;
     const newPruEur = newTotalQty > 0 ? newTotalCostEur / newTotalQty : null;
 
     return {
@@ -110,6 +113,7 @@ export function ReinforcePositionModal({
     qtyInput,
     unitPrice,
     buyCurrency,
+    feesEur,
     eurusdRate,
     convertAmount,
     displayCurrency,
@@ -139,6 +143,7 @@ export function ReinforcePositionModal({
       return;
     }
 
+    const feesNum = Math.max(0, Number(feesEur.replace(",", ".")) || 0);
     setSaving(true);
     try {
       const saved = await reinforcePortfolioPosition(position.id, {
@@ -147,6 +152,7 @@ export function ReinforcePositionModal({
         price: pxNum,
         currency: buyCurrency,
         purchase_date: purchaseDate.trim() || undefined,
+        fees_eur: feesNum,
         notes: notes.trim() || undefined,
       });
       onReinforced?.(saved);
@@ -164,7 +170,7 @@ export function ReinforcePositionModal({
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -280,7 +286,7 @@ export function ReinforcePositionModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
                 Date d&apos;achat
@@ -290,6 +296,20 @@ export function ReinforcePositionModal({
                 value={purchaseDate}
                 onChange={(e) => setPurchaseDate(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                Frais (€) {position.envelope === "CTO" ? "· 1 € auto" : ""}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={feesEur}
+                onChange={(e) => setFeesEur(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium tabular-nums text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
             </div>
 

@@ -63,6 +63,8 @@ export interface StockInfoResponse {
   price_to_book?: number | null;
   ev_to_ebitda?: number | null;
   dividend_yield?: number | null;
+  dividend_rate?: number | null;
+  ex_dividend_date?: string | null;
   beta?: number | null;
   fifty_two_week_high?: number | null;
   fifty_two_week_low?: number | null;
@@ -406,6 +408,7 @@ export interface PortfolioPositionItem {
   invested_amount?: number | null;
   currency: string;
   purchase_date?: string | null;
+  fees_eur?: number;
   current_price?: number | null;
   asset_currency?: string | null;
   current_value_eur: number;
@@ -418,6 +421,10 @@ export interface PortfolioPositionItem {
   perf_1m_pct?: number | null;
   perf_1y_eur?: number | null;
   perf_1y_pct?: number | null;
+  dividend_yield_pct?: number | null;
+  annual_dividend_eur?: number;
+  yield_on_cost_pct?: number | null;
+  ex_dividend_date?: string | null;
   weight_pct: number;
   score_global?: number | null;
   score_valuation?: number | null;
@@ -459,6 +466,7 @@ export interface PortfolioPerformancePoint {
   portfolio_pct: number;
   benchmark_pct: number;
   portfolio_value?: number | null;
+  invested_value?: number | null;
   benchmark_price?: number | null;
 }
 
@@ -507,6 +515,7 @@ export interface PortfolioDonuts {
 export interface PortfolioWeightedStats {
   total_value_eur: number;
   total_cost_eur: number;
+  total_fees_eur?: number;
   total_pnl_eur: number;
   total_pnl_pct?: number | null;
   day_pnl_eur?: number | null;
@@ -538,13 +547,73 @@ export interface PortfolioWeightedStats {
   equities_avg_score_global?: number | null;
 }
 
+export interface PortfolioDividendItem {
+  position_id: number;
+  ticker: string;
+  name: string;
+  envelope: string;
+  dividend_yield_pct: number;
+  yield_on_cost_pct?: number | null;
+  annual_gross_eur: number;
+  annual_net_eur: number;
+  ex_dividend_date?: string | null;
+}
+
+export interface PortfolioDividendsSummary {
+  annual_gross_eur: number;
+  annual_net_eur: number;
+  monthly_net_eur: number;
+  portfolio_yield_pct: number;
+  yield_on_cost_pct: number;
+  cto_tax_rate_pct: number;
+  payers_count: number;
+  items: PortfolioDividendItem[];
+}
+
 export interface PortfolioDashboardResponse {
   eurusd_rate: number;
   stats: PortfolioWeightedStats;
   donuts: PortfolioDonuts;
+  dividends?: PortfolioDividendsSummary | null;
   positions: PortfolioPositionItem[];
   sales: PortfolioSaleItem[];
   total_realized_pnl_eur: number;
+  updated_at: string;
+}
+
+export interface StockNewsItem {
+  title: string;
+  publisher?: string | null;
+  url?: string | null;
+  published_at?: string | null;
+  summary?: string | null;
+}
+
+export interface StockNewsResponse {
+  ticker: string;
+  items: StockNewsItem[];
+  updated_at: string;
+  is_stale: boolean;
+}
+
+export interface ScoreHistoryPoint {
+  label: string;
+  date: string;
+  score_global?: number | null;
+  score_valuation?: number | null;
+  score_growth?: number | null;
+  score_quality?: number | null;
+  score_health?: number | null;
+  price?: number | null;
+  source: "annual" | "snapshot" | "live" | string;
+}
+
+export interface ScoreHistoryResponse {
+  ticker: string;
+  asset_type: string;
+  points: ScoreHistoryPoint[];
+  trend_delta_pts?: number | null;
+  trend_label: string;
   updated_at: string;
 }
 

@@ -69,10 +69,18 @@ def init_db() -> None:
 
     # Safe additive migrations for existing SQLite / PostgreSQL deployments
     inspector = inspect(engine)
-    if "portfolio_positions" in inspector.get_table_names():
+    table_names = set(inspector.get_table_names())
+    if "portfolio_positions" in table_names:
         existing_cols = {col["name"] for col in inspector.get_columns("portfolio_positions")}
         with engine.begin() as conn:
             if "purchase_date" not in existing_cols:
                 conn.execute(text("ALTER TABLE portfolio_positions ADD COLUMN purchase_date VARCHAR(16)"))
             if "asset_type_override" not in existing_cols:
                 conn.execute(text("ALTER TABLE portfolio_positions ADD COLUMN asset_type_override VARCHAR(16)"))
+            if "fees_eur" not in existing_cols:
+                conn.execute(text("ALTER TABLE portfolio_positions ADD COLUMN fees_eur FLOAT NOT NULL DEFAULT 0"))
+    if "portfolio_lots" in table_names:
+        lot_cols = {col["name"] for col in inspector.get_columns("portfolio_lots")}
+        with engine.begin() as conn:
+            if "fees_eur" not in lot_cols:
+                conn.execute(text("ALTER TABLE portfolio_lots ADD COLUMN fees_eur FLOAT NOT NULL DEFAULT 0"))

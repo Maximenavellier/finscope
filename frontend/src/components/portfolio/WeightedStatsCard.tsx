@@ -90,6 +90,9 @@ export function WeightedStatsCard({
             </p>
             <p className="text-[11px] tabular-nums text-slate-400">
               Investi : {formatPrice(conv(stats.total_cost_eur), displayCurrency)}
+              {stats.total_fees_eur && stats.total_fees_eur > 0
+                ? ` (dt ${formatPrice(conv(stats.total_fees_eur), displayCurrency)} frais)`
+                : ""}
             </p>
           </div>
 

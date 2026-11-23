@@ -65,6 +65,8 @@ class StockInfoResponse(BaseModel):
     price_to_book: Optional[float] = None
     ev_to_ebitda: Optional[float] = None
     dividend_yield: Optional[float] = None
+    dividend_rate: Optional[float] = None
+    ex_dividend_date: Optional[str] = None
     beta: Optional[float] = None
     fifty_two_week_high: Optional[float] = None
     fifty_two_week_low: Optional[float] = None
@@ -308,3 +310,18 @@ class SystemStatusResponse(BaseModel):
     providers: list[ApiProviderStatus] = Field(default_factory=list)
     cache_entries_count: int = 0
     checked_at: str
+
+
+class StockNewsItem(BaseModel):
+    title: str
+    publisher: Optional[str] = None
+    url: Optional[str] = None
+    published_at: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class StockNewsResponse(BaseModel):
+    ticker: str
+    items: list[StockNewsItem] = Field(default_factory=list)
+    updated_at: str
+    is_stale: bool = False

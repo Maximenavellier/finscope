@@ -18,8 +18,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   getStockAnalysts,
   getStockFundamentals,
+  getStockNews,
   getStockOverview,
   getStockPrices,
+  getStockScoreHistory,
   getStockSegments,
   getStockSurprises,
 } from "@/lib/api";
@@ -27,7 +29,9 @@ import type {
   AnalystsResponse,
   FundamentalsResponse,
   PriceHistoryResponse,
+  ScoreHistoryResponse,
   SegmentsResponse,
+  StockNewsResponse,
   StockOverviewResponse,
   SurprisesResponse,
 } from "@/lib/types";
@@ -43,6 +47,8 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
   const [surprises, setSurprises] = useState<SurprisesResponse | null>(null);
   const [segments, setSegments] = useState<SegmentsResponse | null>(null);
   const [analysts, setAnalysts] = useState<AnalystsResponse | null>(null);
+  const [scoreHistory, setScoreHistory] = useState<ScoreHistoryResponse | null>(null);
+  const [news, setNews] = useState<StockNewsResponse | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -62,14 +68,17 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
       setError(null);
 
       try {
-        const [ovRes, pxRes, fundRes, surpRes, segRes, anRes] = await Promise.allSettled([
-          getStockOverview(ticker, forceRefresh),
-          getStockPrices(ticker, "5Y", displayCurrency, forceRefresh),
-          getStockFundamentals(ticker, "annual", false, forceRefresh),
-          getStockSurprises(ticker, forceRefresh),
-          getStockSegments(ticker, forceRefresh),
-          getStockAnalysts(ticker, forceRefresh),
-        ]);
+        const [ovRes, pxRes, fundRes, surpRes, segRes, anRes, shRes, newsRes] =
+          await Promise.allSettled([
+            getStockOverview(ticker, forceRefresh),
+            getStockPrices(ticker, "5Y", displayCurrency, forceRefresh),
+            getStockFundamentals(ticker, "annual", false, forceRefresh),
+            getStockSurprises(ticker, forceRefresh),
+            getStockSegments(ticker, forceRefresh),
+            getStockAnalysts(ticker, forceRefresh),
+            getStockScoreHistory(ticker, forceRefresh),
+            getStockNews(ticker, 5, forceRefresh),
+          ]);
 
         if (ovRes.status === "rejected") {
           throw ovRes.reason;
@@ -80,6 +89,8 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
         if (surpRes.status === "fulfilled") setSurprises(surpRes.value);
         if (segRes.status === "fulfilled") setSegments(segRes.value);
         if (anRes.status === "fulfilled") setAnalysts(anRes.value);
+        if (shRes.status === "fulfilled") setScoreHistory(shRes.value);
+        if (newsRes.status === "fulfilled") setNews(newsRes.value);
 
         if (forceRefresh && hasOpenedPeers) {
           setPeersRefreshKey((k) => k + 1);
@@ -194,6 +205,9 @@ export function StockDetailClient({ ticker }: { ticker: string }) {
           scores={overview.scores}
           prices={prices}
           fairValue={overview.fair_value?.fair_value}
+          scoreHistory={scoreHistory}
+          surprises={surprises}
+          news={news}
         />
       )}
 

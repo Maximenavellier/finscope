@@ -151,7 +151,111 @@ export function PositionsTable({
             Aucune position enregistrée. Ajoutez une première action ou un ETF pour démarrer votre suivi.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            {/* Mobile card layout */}
+            <div className="divide-y divide-slate-100 md:hidden dark:divide-slate-800/80">
+              {positions.map((pos) => {
+                const { eur: hEur, pct: hPct } = getPositionHorizonValues(pos, perfHorizon);
+                const hasPerf = hEur !== null;
+                const pnlPos = (hEur ?? 0) >= 0;
+                const score = isValidNumber(pos.score_global) ? pos.score_global : null;
+                const scoreVariant =
+                  score === null ? "secondary" : score >= 70 ? "emerald" : score >= 45 ? "amber" : "coral";
+
+                return (
+                  <div key={`m-${pos.id}`} className="space-y-2.5 px-4 py-3.5 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <Link href={`/stock/${encodeURIComponent(pos.ticker)}`} className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">
+                            {pos.ticker}
+                          </span>
+                          <Badge variant={pos.envelope === "PEA" ? "emerald" : "outline"}>
+                            {pos.envelope}
+                          </Badge>
+                          {pos.asset_type === "ETF" && <Badge variant="secondary">ETF</Badge>}
+                          <Badge variant={scoreVariant}>
+                            {score !== null ? `${Math.round(score)}/100` : "—"}
+                          </Badge>
+                        </div>
+                        <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
+                          {pos.name}
+                        </p>
+                      </Link>
+
+                      <div className="text-right tabular-nums shrink-0">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">
+                          {formatPrice(convEur(pos.current_value_eur), displayCurrency)}
+                        </p>
+                        {hasPerf ? (
+                          <p
+                            className={cn(
+                              "text-[11px] font-semibold",
+                              pnlPos
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-rose-600 dark:text-rose-400"
+                            )}
+                          >
+                            {hEur > 0 ? "+" : ""}
+                            {formatPrice(convEur(hEur), displayCurrency)} ({formatPercent(hPct, { signed: true })})
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">—</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                      <span>
+                        {pos.quantity != null && pos.pru != null
+                          ? `${Number(pos.quantity.toFixed(4))} × ${formatDisplayPrice(pos.pru, pos.currency)}`
+                          : formatDisplayPrice(pos.invested_amount, pos.currency)}
+                        {` · Poids ${pos.weight_pct.toFixed(1).replace(".", ",")} %`}
+                      </span>
+                      {pos.purchase_date && <span>{formatDateFR(pos.purchase_date)}</span>}
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => onReinforce(pos)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50/70 py-1.5 text-[11px] font-semibold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+                      >
+                        <PlusCircle className="h-3 w-3" />
+                        <span>Renf.</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onEdit(pos)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        <span>Modif.</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSell(pos)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-amber-200 bg-amber-50/70 py-1.5 text-[11px] font-semibold text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300"
+                      >
+                        <TrendingDown className="h-3 w-3" />
+                        <span>Vendre</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(pos)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-rose-200 bg-rose-50/70 py-1.5 text-[11px] font-semibold text-rose-600 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-400"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        <span>Suppr.</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Desktop table layout */}
+            <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[840px] border-collapse text-xs">
               <thead>
                 <tr className="border-y border-slate-200 bg-slate-50/80 text-slate-500 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-400">
@@ -312,7 +416,8 @@ export function PositionsTable({
                 })}
               </tbody>
             </table>
-          </div>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

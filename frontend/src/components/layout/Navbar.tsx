@@ -74,15 +74,15 @@ export function Navbar() {
             </nav>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
-              className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:bg-slate-800 sm:w-64 md:w-72 cursor-pointer"
+              className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-sm text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/80 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:bg-slate-800 sm:w-64 sm:px-3 md:w-72 cursor-pointer"
+              aria-label="Rechercher un titre"
             >
               <Search className="h-4 w-4 shrink-0 text-slate-400" />
               <span className="hidden truncate sm:inline">Rechercher action ou ETF...</span>
-              <span className="sm:hidden">Rechercher</span>
               <kbd className="ml-auto hidden rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 sm:inline-block">
                 Ctrl+K
               </kbd>
@@ -113,28 +113,6 @@ export function Navbar() {
             <ThemeToggle />
           </div>
         </div>
-
-        {/* Mobile bottom-strip nav inside header */}
-        <nav className="flex items-center gap-1 border-t border-slate-100 px-4 py-1.5 md:hidden dark:border-slate-800">
-          {navLinks.map(({ href, label, icon: Icon }) => {
-            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1 text-xs font-medium transition-colors",
-                  active
-                    ? "bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                    : "text-slate-600 dark:text-slate-400"
-                )}
-              >
-                <Icon className="h-3.5 w-3.5" />
-                <span>{label}</span>
-              </Link>
-            );
-          })}
-        </nav>
       </header>
 
       <CommandSearch open={searchOpen} onOpenChange={setSearchOpen} />

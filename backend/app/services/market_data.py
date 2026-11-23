@@ -972,6 +972,18 @@ class MarketDataService:
 
             # ETF-specific fields
             expense_ratio = expense_ratio
+            dividend_rate = safe_float(info.get("dividendRate")) or safe_float(
+                info.get("trailingAnnualDividendRate")
+            )
+            ex_dividend_date: Optional[str] = None
+            ex_div_raw = safe_int(info.get("exDividendDate"))
+            if ex_div_raw is not None and ex_div_raw > 0:
+                try:
+                    ex_dividend_date = (
+                        datetime(1970, 1, 1) + timedelta(seconds=ex_div_raw)
+                    ).strftime("%Y-%m-%d")
+                except Exception:
+                    ex_dividend_date = None
             next_earnings_date = self._extract_next_earnings_date(sym, tk, info, asset_type)
             days_until_earnings = self._compute_days_until_earnings(next_earnings_date)
             fx_to_eur_rate, price_eur = self._compute_eur_estimate_fields(db, currency, price)
@@ -1004,6 +1016,8 @@ class MarketDataService:
                 "price_to_book": safe_float(info.get("priceToBook")),
                 "ev_to_ebitda": safe_float(info.get("enterpriseToEbitda")),
                 "dividend_yield": safe_float(info.get("dividendYield")),
+                "dividend_rate": dividend_rate,
+                "ex_dividend_date": ex_dividend_date,
                 "beta": safe_float(info.get("beta")),
                 "fifty_two_week_high": safe_float(info.get("fiftyTwoWeekHigh")),
                 "fifty_two_week_low": safe_float(info.get("fiftyTwoWeekLow")),
@@ -2563,6 +2577,148 @@ class MarketDataService:
         if score >= 1.8:
             return "Alléger"
         return "Vendre"
+
+    def get_stock_news(
+        self,
+        db: Session,
+        ticker: str,
+        limit: int = 5,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        sym = normalize_ticker(ticker)
+        safe_limit = max(1, min(15, int(limit or 5)))
+        cache_key = f"news:{sym}"
+        if not refresh:
+            cached = cache_service.get(db, cache_key)
+            if cached is not None:
+                payload = dict(cached.payload)
+                items = list(payload.get("items") or [])[:safe_limit]
+                return sanitize_for_json(
+                    {
+                        "ticker": sym,
+                        "items": items,
+                        "updated_at": cached.updated_at.isoformat(),
+                        "is_stale": cached.is_stale,
+                    }
+                )
+
+        raw_items: list[dict[str, Any]] = []
+        seen_titles: set[str] = set()
+
+        def _push_item(
+            title: Any,
+            publisher: Any,
+            url: Any,
+            pub_ts_or_str: Any,
+            summary: Any,
+        ) -> None:
+            t_clean = str(title or "").strip()
+            if not t_clean:
+                return
+            key = t_clean.lower()
+            if key in seen_titles:
+                return
+            seen_titles.add(key)
+
+            pub_iso: Optional[str] = None
+            if isinstance(pub_ts_or_str, (int, float)) and pub_ts_or_str > 0:
+                try:
+                    pub_iso = (
+                        datetime(1970, 1, 1) + timedelta(seconds=int(pub_ts_or_str))
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                except Exception:
+                    pub_iso = None
+            elif isinstance(pub_ts_or_str, str) and pub_ts_or_str.strip():
+                pub_iso = pub_ts_or_str.strip()[:25]
+
+            sum_clean = str(summary or "").strip()
+            if len(sum_clean) > 220:
+                sum_clean = sum_clean[:217].rstrip() + "..."
+
+            raw_items.append(
+                {
+                    "title": t_clean,
+                    "publisher": str(publisher).strip() if publisher else None,
+                    "url": str(url).strip() if url else None,
+                    "published_at": pub_iso,
+                    "summary": sum_clean or None,
+                }
+            )
+
+        # 1. Try Finnhub company-news (last 30 days)
+        now_dt = utc_now()
+        from_str = (now_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+        to_str = now_dt.strftime("%Y-%m-%d")
+        fh_news = self._finnhub_get(
+            "/company-news",
+            {"symbol": sym, "from": from_str, "to": to_str},
+        )
+        if isinstance(fh_news, list):
+            sorted_fh = sorted(
+                [n for n in fh_news if isinstance(n, dict)],
+                key=lambda n: int(n.get("datetime") or 0),
+                reverse=True,
+            )
+            for item in sorted_fh[:12]:
+                _push_item(
+                    item.get("headline"),
+                    item.get("source"),
+                    item.get("url"),
+                    item.get("datetime"),
+                    item.get("summary"),
+                )
+
+        # 2. Complement / Fallback via Yahoo Finance (supports both legacy & content schemas)
+        if len(raw_items) < safe_limit:
+            try:
+                tk = yf.Ticker(sym)
+                yf_news = getattr(tk, "news", None) or []
+                if isinstance(yf_news, list):
+                    for entry in yf_news:
+                        if not isinstance(entry, dict):
+                            continue
+                        content = entry.get("content") if isinstance(entry.get("content"), dict) else None
+                        if content is not None:
+                            provider = content.get("provider") if isinstance(content.get("provider"), dict) else {}
+                            canon = (
+                                content.get("canonicalUrl")
+                                if isinstance(content.get("canonicalUrl"), dict)
+                                else (
+                                    content.get("clickThroughUrl")
+                                    if isinstance(content.get("clickThroughUrl"), dict)
+                                    else {}
+                                )
+                            )
+                            _push_item(
+                                content.get("title"),
+                                provider.get("displayName"),
+                                canon.get("url"),
+                                content.get("pubDate") or content.get("displayTime"),
+                                content.get("summary") or content.get("description"),
+                            )
+                        else:
+                            _push_item(
+                                entry.get("title"),
+                                entry.get("publisher"),
+                                entry.get("link"),
+                                entry.get("providerPublishTime"),
+                                entry.get("summary"),
+                            )
+            except Exception as exc:
+                logger.warning("Failed fetching yfinance news for %s: %s", sym, exc)
+
+        stored_payload = {"ticker": sym, "items": raw_items[:15]}
+        updated_at = cache_service.set(
+            db, cache_key, "news", stored_payload, ttl_seconds=1800
+        )
+        return sanitize_for_json(
+            {
+                "ticker": sym,
+                "items": raw_items[:safe_limit],
+                "updated_at": updated_at.isoformat(),
+                "is_stale": False,
+            }
+        )
 
 
 market_data_service = MarketDataService()

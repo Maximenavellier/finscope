@@ -327,6 +327,22 @@ def _aggregate_horizon_stats(
     return round(valid_eur_sum, 2), round((valid_eur_sum / prev_val_sum) * 100.0, 2)
 
 
+def _extract_dividend_yield_pct(
+    quote: dict[str, Any], live_price: Optional[float]
+) -> Optional[float]:
+    div_rate = safe_float(quote.get("dividend_rate"))
+    if div_rate is not None and div_rate > 0 and live_price is not None and live_price > 0:
+        pct = (div_rate / live_price) * 100.0
+        if 0.0 < pct <= 25.0:
+            return round(pct, 2)
+    raw_y = safe_float(quote.get("dividend_yield"))
+    if raw_y is not None and raw_y > 0:
+        pct = raw_y * 100.0 if raw_y < 0.25 else raw_y
+        if 0.0 < pct <= 25.0:
+            return round(pct, 2)
+    return None
+
+
 class PortfolioService:
     @staticmethod
     def _serialize_sale(sale: PortfolioSale) -> dict[str, Any]:
@@ -373,6 +389,7 @@ class PortfolioService:
                     "stats": {
                         "total_value_eur": 0.0,
                         "total_cost_eur": 0.0,
+                        "total_fees_eur": 0.0,
                         "total_pnl_eur": 0.0,
                         "total_pnl_pct": None,
                         "day_pnl_eur": 0.0,
@@ -389,6 +406,16 @@ class PortfolioService:
                         "top5_weight_pct": 0.0,
                     },
                     "donuts": {"by_position": [], "by_envelope": [], "by_sector": []},
+                    "dividends": {
+                        "annual_gross_eur": 0.0,
+                        "annual_net_eur": 0.0,
+                        "monthly_net_eur": 0.0,
+                        "portfolio_yield_pct": 0.0,
+                        "yield_on_cost_pct": 0.0,
+                        "cto_tax_rate_pct": 31.4,
+                        "payers_count": 0,
+                        "items": [],
+                    },
                     "positions": [],
                     "sales": serialized_sales,
                     "total_realized_pnl_eur": total_realized_pnl_eur,
@@ -420,6 +447,17 @@ class PortfolioService:
             horizon_perfs = _compute_period_perf(
                 current_value_eur, quote, info_bundle.get("prices")
             )
+            div_yield_pct = _extract_dividend_yield_pct(quote, live_price)
+            annual_div_eur = (
+                round(current_value_eur * (div_yield_pct / 100.0), 2)
+                if (div_yield_pct is not None and current_value_eur > 0)
+                else 0.0
+            )
+            yoc_pct = (
+                round((annual_div_eur / cost_basis_eur) * 100.0, 2)
+                if (annual_div_eur > 0 and cost_basis_eur > 0)
+                else None
+            )
 
             score_global = safe_float((scores.get("global") or {}).get("score"))
             score_val = safe_float((scores.get("valuation") or {}).get("score"))
@@ -438,6 +476,7 @@ class PortfolioService:
                     "invested_amount": pos.invested_amount,
                     "currency": pos.currency,
                     "purchase_date": pos.purchase_date,
+                    "fees_eur": round(float(pos.fees_eur or 0.0), 2),
                     "current_price": live_price,
                     "asset_currency": asset_currency,
                     "current_value_eur": round(current_value_eur, 2),
@@ -445,6 +484,10 @@ class PortfolioService:
                     "pnl_eur": round(pnl_eur, 2),
                     "pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
                     **horizon_perfs,
+                    "dividend_yield_pct": div_yield_pct,
+                    "annual_dividend_eur": annual_div_eur,
+                    "yield_on_cost_pct": yoc_pct,
+                    "ex_dividend_date": quote.get("ex_dividend_date"),
                     "weight_pct": 0.0,
                     "score_global": score_global,
                     "score_valuation": score_val,
@@ -457,6 +500,7 @@ class PortfolioService:
         valued_items.sort(key=lambda x: x["current_value_eur"], reverse=True)
         total_value = sum(item["current_value_eur"] for item in valued_items)
         total_cost = sum(item["cost_basis_eur"] for item in valued_items)
+        total_fees = sum(item["fees_eur"] for item in valued_items)
         total_pnl = total_value - total_cost
         total_pnl_pct = ((total_pnl / total_cost) * 100.0) if total_cost > 0 else None
 
@@ -515,6 +559,7 @@ class PortfolioService:
         stats = {
             "total_value_eur": round(total_value, 2),
             "total_cost_eur": round(total_cost, 2),
+            "total_fees_eur": round(total_fees, 2),
             "total_pnl_eur": round(total_pnl, 2),
             "total_pnl_pct": round(total_pnl_pct, 2) if total_pnl_pct is not None else None,
             "day_pnl_eur": day_pnl_eur,
@@ -556,6 +601,41 @@ class PortfolioService:
             ),
         }
 
+        cto_tax_rate = 31.4
+        div_items: list[dict[str, Any]] = []
+        for item in valued_items:
+            gross = item.get("annual_dividend_eur") or 0.0
+            dy_pct = item.get("dividend_yield_pct")
+            if gross <= 0 or dy_pct is None:
+                continue
+            net = round(gross * (1.0 - cto_tax_rate / 100.0), 2) if item["envelope"] == "CTO" else round(gross, 2)
+            div_items.append(
+                {
+                    "position_id": item["id"],
+                    "ticker": item["ticker"],
+                    "name": item["name"],
+                    "envelope": item["envelope"],
+                    "dividend_yield_pct": dy_pct,
+                    "yield_on_cost_pct": item.get("yield_on_cost_pct"),
+                    "annual_gross_eur": round(gross, 2),
+                    "annual_net_eur": net,
+                    "ex_dividend_date": item.get("ex_dividend_date"),
+                }
+            )
+        div_items.sort(key=lambda d: d["annual_gross_eur"], reverse=True)
+        div_gross_sum = round(sum(d["annual_gross_eur"] for d in div_items), 2)
+        div_net_sum = round(sum(d["annual_net_eur"] for d in div_items), 2)
+        dividends_summary = {
+            "annual_gross_eur": div_gross_sum,
+            "annual_net_eur": div_net_sum,
+            "monthly_net_eur": round(div_net_sum / 12.0, 2),
+            "portfolio_yield_pct": round((div_gross_sum / total_value) * 100.0, 2) if total_value > 0 else 0.0,
+            "yield_on_cost_pct": round((div_gross_sum / total_cost) * 100.0, 2) if total_cost > 0 else 0.0,
+            "cto_tax_rate_pct": cto_tax_rate,
+            "payers_count": len(div_items),
+            "items": div_items,
+        }
+
         clean_positions = [{k: v for k, v in item.items() if k != "_bundle"} for item in valued_items]
 
         return sanitize_for_json(
@@ -567,6 +647,7 @@ class PortfolioService:
                     "by_envelope": by_envelope_slices,
                     "by_sector": by_sector_slices,
                 },
+                "dividends": dividends_summary,
                 "positions": clean_positions,
                 "sales": serialized_sales,
                 "total_realized_pnl_eur": total_realized_pnl_eur,
@@ -592,6 +673,7 @@ class PortfolioService:
             invested_amount=data.invested_amount,
             currency=currency,
             purchase_date=purchase_date,
+            fees_eur=round(float(data.fees_eur or 0.0), 2),
             notes=data.notes,
         )
         db.add(row)
@@ -629,6 +711,8 @@ class PortfolioService:
             row.currency = data.currency.strip().upper()
         if data.purchase_date is not None:
             row.purchase_date = data.purchase_date.strip() or None
+        if data.fees_eur is not None:
+            row.fees_eur = round(float(data.fees_eur), 2)
         if data.notes is not None:
             row.notes = data.notes
         row.updated_at = utc_now()
@@ -703,6 +787,8 @@ class PortfolioService:
 
         price_eur = _to_eur(unit_price_in, in_cur, eurusd) or unit_price_in
         amount_eur = _to_eur(added_amount_in, in_cur, eurusd) or added_amount_in
+        fee_eur = round(float(data.fees_eur or 0.0), 2)
+        pos.fees_eur = round(float(pos.fees_eur or 0.0) + fee_eur, 2)
 
         lot_row = PortfolioLot(
             position_id=pos.id,
@@ -712,6 +798,7 @@ class PortfolioService:
             currency=in_cur,
             price_eur=round(price_eur, 4),
             amount_eur=round(amount_eur, 2),
+            fees_eur=fee_eur,
             tx_date=tx_date,
             notes=data.notes.strip() if data.notes else None,
         )
@@ -772,6 +859,8 @@ class PortfolioService:
 
         if total_qty <= 0:
             raise ValueError("Quantité détenue invalide.")
+
+        total_cost_eur += float(pos.fees_eur or 0.0)
 
         if data.mode == "full":
             fraction = 1.0
@@ -843,6 +932,8 @@ class PortfolioService:
                 pos.invested_amount = round(
                     max(1e-4, float(pos.invested_amount) * (1.0 - fraction)), 4
                 )
+            if pos.fees_eur:
+                pos.fees_eur = round(max(0.0, float(pos.fees_eur) * (1.0 - fraction)), 2)
             for lot in db.query(PortfolioLot).filter(PortfolioLot.position_id == pos_id).all():
                 lot.quantity_added = round(max(1e-8, float(lot.quantity_added) * (1.0 - fraction)), 6)
             pos.updated_at = utc_now()
@@ -1049,17 +1140,33 @@ class PortfolioService:
                 idx = bisect_right(p_dates, dt_str) - 1
                 aligned_closes.append(p_closes[idx] if idx >= 0 else p_closes[0])
 
+            _, base_cost_eur = self._position_value_and_cost_eur(
+                pos, None, "EUR", eurusd, db=db
+            )
+            total_cost_target = base_cost_eur * eurusd if cur_norm == "USD" else base_cost_eur
+
             pos_lots = lots_by_pos.get(pos.id) or []
             first_price_date = p_dates[0]
             history_len = len(p_dates)
             if pos_lots:
                 has_any_purchase_date = True
                 lots_qty_sum = sum(float(l.quantity_added) for l in pos_lots if l.quantity_added > 0)
+                lots_cost_sum = sum(
+                    _convert_currency(
+                        float(l.amount_eur or 0.0) + float(l.fees_eur or 0.0),
+                        "EUR",
+                        cur_norm,
+                        eurusd,
+                    )
+                    for l in pos_lots
+                    if l.quantity_added > 0
+                )
                 initial_qty = max(0.0, eff_qty - lots_qty_sum)
                 if initial_qty > 1e-6:
                     pos_entries.append(
                         {
                             "qty": initial_qty,
+                            "cost": max(0.0, total_cost_target - lots_cost_sum),
                             "start_date": start_date,
                             "first_price_date": first_price_date,
                             "history_len": history_len,
@@ -1070,9 +1177,16 @@ class PortfolioService:
                 for lot in pos_lots:
                     if lot.quantity_added > 0:
                         lot_dt = (lot.tx_date or "").strip()[:10] or start_date
+                        lot_cost = _convert_currency(
+                            float(lot.amount_eur or 0.0) + float(lot.fees_eur or 0.0),
+                            "EUR",
+                            cur_norm,
+                            eurusd,
+                        )
                         pos_entries.append(
                             {
                                 "qty": float(lot.quantity_added),
+                                "cost": lot_cost,
                                 "start_date": lot_dt,
                                 "first_price_date": first_price_date,
                                 "history_len": history_len,
@@ -1084,6 +1198,7 @@ class PortfolioService:
                 pos_entries.append(
                     {
                         "qty": eff_qty,
+                        "cost": total_cost_target,
                         "start_date": start_date,
                         "first_price_date": first_price_date,
                         "history_len": history_len,
@@ -1130,6 +1245,7 @@ class PortfolioService:
                     return None
                 base_p = totals[i0]
                 base_b = bench_closes[i0]
+                inv_total = sum(e.get("cost", 0.0) for e in rich_entries)
                 out: list[dict[str, Any]] = []
                 for i in range(i0, len(bench_dates)):
                     dt_str = bench_dates[i]
@@ -1143,6 +1259,7 @@ class PortfolioService:
                             "portfolio_pct": round(p_b100 - 100.0, 2),
                             "benchmark_pct": round(b_b100 - 100.0, 2),
                             "portfolio_value": round(totals[i], 2),
+                            "invested_value": round(inv_total, 2),
                             "benchmark_price": round(bench_closes[i], 2),
                         }
                     )
@@ -1170,6 +1287,11 @@ class PortfolioService:
                 for e in pos_entries
                 if e["real_start_date"] <= bench_dates[i0]
             )
+            v_inv_start = sum(
+                e.get("cost", 0.0)
+                for e in pos_entries
+                if e["real_start_date"] <= bench_dates[i0]
+            )
             out = [
                 {
                     "date": bench_dates[i0],
@@ -1178,6 +1300,7 @@ class PortfolioService:
                     "portfolio_pct": 0.0,
                     "benchmark_pct": 0.0,
                     "portfolio_value": round(v_start_val, 2),
+                    "invested_value": round(v_inv_start, 2),
                     "benchmark_price": round(bench_closes[i0], 2),
                 }
             ]
@@ -1197,6 +1320,11 @@ class PortfolioService:
                     for e in pos_entries
                     if e["real_start_date"] <= dt_str
                 )
+                v_inv_day = sum(
+                    e.get("cost", 0.0)
+                    for e in pos_entries
+                    if e["real_start_date"] <= dt_str
+                )
                 b_b100 = (bench_closes[i] / base_bench) * 100.0
                 out.append(
                     {
@@ -1206,6 +1334,7 @@ class PortfolioService:
                         "portfolio_pct": round(twr - 100.0, 2),
                         "benchmark_pct": round(b_b100 - 100.0, 2),
                         "portfolio_value": round(v_day, 2),
+                        "invested_value": round(v_inv_day, 2),
                         "benchmark_price": round(bench_closes[i], 2),
                     }
                 )
@@ -1506,22 +1635,23 @@ class PortfolioService:
         eurusd: float,
         db: Optional[Session] = None,
     ) -> tuple[float, float]:
+        fees_eur = float(pos.fees_eur or 0.0)
         if pos.quantity is not None and pos.pru is not None:
-            cost_eur = _to_eur(pos.quantity * pos.pru, pos.currency, eurusd, db=db) or 0.0
+            cost_eur = (_to_eur(pos.quantity * pos.pru, pos.currency, eurusd, db=db) or 0.0) + fees_eur
             if live_price is not None and live_price > 0:
                 val_eur = _to_eur(pos.quantity * live_price, asset_currency, eurusd, db=db) or cost_eur
             else:
                 val_eur = cost_eur
             return val_eur, cost_eur
         if pos.invested_amount is not None and pos.pru is not None and pos.pru > 0:
-            cost_eur = _to_eur(pos.invested_amount, pos.currency, eurusd, db=db) or 0.0
+            cost_eur = (_to_eur(pos.invested_amount, pos.currency, eurusd, db=db) or 0.0) + fees_eur
             if live_price is not None and live_price > 0:
                 implied_qty = pos.invested_amount / pos.pru
                 val_eur = _to_eur(implied_qty * live_price, asset_currency, eurusd, db=db) or cost_eur
             else:
                 val_eur = cost_eur
             return val_eur, cost_eur
-        cost_eur = _to_eur(pos.invested_amount, pos.currency, eurusd, db=db) or 0.0
+        cost_eur = (_to_eur(pos.invested_amount, pos.currency, eurusd, db=db) or 0.0) + fees_eur
         return cost_eur, cost_eur
 
     def get_opportunity_radar(self, db: Session, refresh: bool = False) -> dict[str, Any]:
@@ -1965,6 +2095,7 @@ class PortfolioService:
                         "invested_amount": p.invested_amount,
                         "currency": p.currency,
                         "purchase_date": p.purchase_date,
+                        "fees_eur": float(p.fees_eur or 0.0),
                         "notes": p.notes,
                     }
                     for p in positions
@@ -1978,6 +2109,7 @@ class PortfolioService:
                         "currency": l.currency,
                         "price_eur": l.price_eur,
                         "amount_eur": l.amount_eur,
+                        "fees_eur": float(l.fees_eur or 0.0),
                         "tx_date": l.tx_date,
                         "notes": l.notes,
                     }
@@ -2041,6 +2173,7 @@ class PortfolioService:
                 invested_amount=safe_float(item.get("invested_amount")),
                 currency=str(item.get("currency") or "EUR"),
                 purchase_date=item.get("purchase_date"),
+                fees_eur=round(float(safe_float(item.get("fees_eur")) or 0.0), 2),
                 notes=item.get("notes"),
             )
             db.add(row)
@@ -2065,6 +2198,7 @@ class PortfolioService:
                     currency=str(item.get("currency") or "EUR"),
                     price_eur=safe_float(item.get("price_eur")) or 0.0,
                     amount_eur=safe_float(item.get("amount_eur")) or 0.0,
+                    fees_eur=round(float(safe_float(item.get("fees_eur")) or 0.0), 2),
                     tx_date=str(item.get("tx_date") or utc_now().strftime("%Y-%m-%d")),
                     notes=item.get("notes"),
                 )

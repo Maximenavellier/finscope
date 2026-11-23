@@ -11,6 +11,7 @@ class PortfolioPositionCreate(BaseModel):
     invested_amount: Optional[float] = Field(None, gt=0)
     currency: Optional[str] = Field("EUR", max_length=16)
     purchase_date: Optional[str] = Field(None, max_length=16)
+    fees_eur: Optional[float] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=500)
 
     @model_validator(mode="after")
@@ -31,6 +32,7 @@ class PortfolioPositionUpdate(BaseModel):
     clear_quantity_pru: bool = False
     currency: Optional[str] = Field(None, max_length=16)
     purchase_date: Optional[str] = Field(None, max_length=16)
+    fees_eur: Optional[float] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=500)
 
 
@@ -47,6 +49,7 @@ class PortfolioPositionItem(BaseModel):
     invested_amount: Optional[float] = None
     currency: str = "EUR"
     purchase_date: Optional[str] = None
+    fees_eur: float = 0.0
     current_price: Optional[float] = None
     asset_currency: Optional[str] = None
     current_value_eur: float = 0.0
@@ -59,6 +62,10 @@ class PortfolioPositionItem(BaseModel):
     perf_1m_pct: Optional[float] = None
     perf_1y_eur: Optional[float] = None
     perf_1y_pct: Optional[float] = None
+    dividend_yield_pct: Optional[float] = None
+    annual_dividend_eur: float = 0.0
+    yield_on_cost_pct: Optional[float] = None
+    ex_dividend_date: Optional[str] = None
     weight_pct: float = 0.0
     score_global: Optional[float] = None
     score_valuation: Optional[float] = None
@@ -110,6 +117,7 @@ class PortfolioReinforceRequest(BaseModel):
     price: float = Field(..., gt=0)
     currency: Literal["EUR", "USD"] = "EUR"
     purchase_date: Optional[str] = Field(None, max_length=16)
+    fees_eur: Optional[float] = Field(None, ge=0)
     notes: Optional[str] = Field(None, max_length=500)
 
     @model_validator(mode="after")
@@ -126,6 +134,7 @@ class PortfolioPerformancePoint(BaseModel):
     portfolio_pct: float
     benchmark_pct: float
     portfolio_value: Optional[float] = None
+    invested_value: Optional[float] = None
     benchmark_price: Optional[float] = None
 
 
@@ -174,6 +183,7 @@ class PortfolioDonuts(BaseModel):
 class PortfolioWeightedStats(BaseModel):
     total_value_eur: float = 0.0
     total_cost_eur: float = 0.0
+    total_fees_eur: float = 0.0
     total_pnl_eur: float = 0.0
     total_pnl_pct: Optional[float] = None
     day_pnl_eur: Optional[float] = None
@@ -205,10 +215,34 @@ class PortfolioWeightedStats(BaseModel):
     equities_avg_score_global: Optional[float] = None
 
 
+class PortfolioDividendItem(BaseModel):
+    position_id: int
+    ticker: str
+    name: str
+    envelope: str
+    dividend_yield_pct: float
+    yield_on_cost_pct: Optional[float] = None
+    annual_gross_eur: float
+    annual_net_eur: float
+    ex_dividend_date: Optional[str] = None
+
+
+class PortfolioDividendsSummary(BaseModel):
+    annual_gross_eur: float = 0.0
+    annual_net_eur: float = 0.0
+    monthly_net_eur: float = 0.0
+    portfolio_yield_pct: float = 0.0
+    yield_on_cost_pct: float = 0.0
+    cto_tax_rate_pct: float = 31.4
+    payers_count: int = 0
+    items: list[PortfolioDividendItem] = Field(default_factory=list)
+
+
 class PortfolioDashboardResponse(BaseModel):
     eurusd_rate: float
     stats: PortfolioWeightedStats
     donuts: PortfolioDonuts
+    dividends: Optional[PortfolioDividendsSummary] = None
     positions: list[PortfolioPositionItem] = Field(default_factory=list)
     sales: list[PortfolioSaleItem] = Field(default_factory=list)
     total_realized_pnl_eur: float = 0.0

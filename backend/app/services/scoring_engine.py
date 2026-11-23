@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Optional
@@ -5,7 +6,7 @@ from typing import Any, Optional
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.db.models import Asset
+from app.db.models import Asset, ScoreSnapshot
 from app.services.cache_service import _is_sqlite_session, _sqlite_write_lock
 from app.utils.math_utils import compute_cagr, compute_percent_change, safe_float, sanitize_for_json, utc_now
 
@@ -746,38 +747,244 @@ def _write_asset_scores(
     scores: dict[str, Any],
 ) -> None:
     asset = db.get(Asset, ticker)
-    if asset is None:
-        return
-
     metrics = scores.get("metrics") or {}
-    if metrics:
-        if metrics.get("pe") is not None:
-            asset.pe = metrics["pe"]
-        if metrics.get("forward_pe") is not None:
-            asset.forward_pe = metrics["forward_pe"]
-        asset.p_fcf = metrics.get("p_fcf")
-        if metrics.get("peg") is not None:
-            asset.peg = metrics["peg"]
-        asset.rev_growth_1y = metrics.get("rev_growth_1y")
-        asset.rev_growth_3y = metrics.get("rev_growth_3y")
-        asset.eps_growth_1y = metrics.get("eps_growth_1y")
-        if metrics.get("gross_margin") is not None:
-            asset.gross_margin = metrics["gross_margin"]
-        if metrics.get("op_margin") is not None:
-            asset.op_margin = metrics["op_margin"]
-        if metrics.get("net_margin") is not None:
-            asset.net_margin = metrics["net_margin"]
-        if metrics.get("roe") is not None:
-            asset.roe = metrics["roe"]
-        asset.net_debt_ebitda = metrics.get("net_debt_ebitda")
+    if asset is not None:
+        if metrics:
+            if metrics.get("pe") is not None:
+                asset.pe = metrics["pe"]
+            if metrics.get("forward_pe") is not None:
+                asset.forward_pe = metrics["forward_pe"]
+            asset.p_fcf = metrics.get("p_fcf")
+            if metrics.get("peg") is not None:
+                asset.peg = metrics["peg"]
+            asset.rev_growth_1y = metrics.get("rev_growth_1y")
+            asset.rev_growth_3y = metrics.get("rev_growth_3y")
+            asset.eps_growth_1y = metrics.get("eps_growth_1y")
+            if metrics.get("gross_margin") is not None:
+                asset.gross_margin = metrics["gross_margin"]
+            if metrics.get("op_margin") is not None:
+                asset.op_margin = metrics["op_margin"]
+            if metrics.get("net_margin") is not None:
+                asset.net_margin = metrics["net_margin"]
+            if metrics.get("roe") is not None:
+                asset.roe = metrics["roe"]
+            asset.net_debt_ebitda = metrics.get("net_debt_ebitda")
 
-    asset.score_global = (scores.get("global") or {}).get("score")
-    asset.score_valuation = (scores.get("valuation") or {}).get("score")
-    asset.score_growth = (scores.get("growth") or {}).get("score")
-    asset.score_quality = (scores.get("quality") or {}).get("score")
-    asset.score_health = (scores.get("health") or {}).get("score")
-    asset.updated_at = utc_now()
+        asset.score_global = (scores.get("global") or {}).get("score")
+        asset.score_valuation = (scores.get("valuation") or {}).get("score")
+        asset.score_growth = (scores.get("growth") or {}).get("score")
+        asset.score_quality = (scores.get("quality") or {}).get("score")
+        asset.score_health = (scores.get("health") or {}).get("score")
+        asset.updated_at = utc_now()
+
+    g_score = safe_float((scores.get("global") or {}).get("score"))
+    if g_score is not None:
+        today_str = utc_now().strftime("%Y-%m-%d")
+        snap = (
+            db.query(ScoreSnapshot)
+            .filter(ScoreSnapshot.ticker == ticker, ScoreSnapshot.snapshot_date == today_str)
+            .first()
+        )
+        v_score = safe_float((scores.get("valuation") or {}).get("score"))
+        gr_score = safe_float((scores.get("growth") or {}).get("score"))
+        q_score = safe_float((scores.get("quality") or {}).get("score"))
+        h_score = safe_float((scores.get("health") or {}).get("score"))
+        if snap is None:
+            db.add(
+                ScoreSnapshot(
+                    ticker=ticker,
+                    snapshot_date=today_str,
+                    score_global=g_score,
+                    score_valuation=v_score,
+                    score_growth=gr_score,
+                    score_quality=q_score,
+                    score_health=h_score,
+                )
+            )
+        else:
+            snap.score_global = g_score
+            snap.score_valuation = v_score
+            snap.score_growth = gr_score
+            snap.score_quality = q_score
+            snap.score_health = h_score
+
     try:
         db.commit()
     except Exception:
         db.rollback()
+
+
+def compute_score_history(
+    db: Session,
+    ticker: str,
+    quote: dict[str, Any],
+    fundamentals: dict[str, Any],
+    prices: Optional[dict[str, Any]],
+    current_scores: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconstruct historical annual scores using historical prices + statements, merged with saved DB snapshots."""
+    sym = ticker.strip().upper()
+    asset_type = quote.get("asset_type") or "EQUITY"
+    points: list[dict[str, Any]] = []
+
+    raw_px_points = (prices or {}).get("points") or []
+    px_dates: list[str] = []
+    px_closes: list[float] = []
+    for pt in raw_px_points:
+        dt = pt.get("date")
+        c = safe_float(pt.get("close"))
+        if dt and c is not None and c > 0:
+            px_dates.append(str(dt)[:10])
+            px_closes.append(float(c))
+
+    cur_price = safe_float(quote.get("price")) or (px_closes[-1] if px_closes else None)
+    cur_shares = safe_float(quote.get("shares_outstanding"))
+
+    def _closest_price(target_dt: str) -> Optional[float]:
+        if not px_dates:
+            return cur_price
+        idx = bisect_right(px_dates, target_dt) - 1
+        if idx >= 0:
+            return px_closes[idx]
+        return px_closes[0]
+
+    annual_raw = [r for r in (fundamentals.get("annual") or []) if isinstance(r, dict)]
+    annual_sorted = sorted(
+        annual_raw,
+        key=lambda r: str(r.get("period_end") or r.get("year") or ""),
+    )
+    annual_tail = annual_sorted[-5:]
+    annual_cutoff_idx = len(annual_sorted) - len(annual_tail)
+
+    if asset_type != "ETF" and annual_tail:
+        snapshot_clear_keys = (
+            "pe",
+            "forward_pe",
+            "peg",
+            "ev_to_ebitda",
+            "enterprise_value",
+            "gross_margin",
+            "op_margin",
+            "net_margin",
+            "roe",
+            "roa",
+            "revenue_growth_info",
+            "earnings_growth_info",
+            "current_ratio_info",
+            "debt_to_equity_info",
+            "total_cash_info",
+            "total_debt_info",
+            "free_cashflow_info",
+            "ebitda_info",
+        )
+        for offset, rec in enumerate(annual_tail):
+            yr_label = str(rec.get("year") or str(rec.get("period_end") or "")[:4])
+            if not yr_label:
+                continue
+            target_dt = str(rec.get("period_end") or f"{yr_label}-12-31")[:10]
+            hist_px = _closest_price(target_dt)
+            hist_quote = dict(quote)
+            for k in snapshot_clear_keys:
+                hist_quote[k] = None
+            hist_quote["price"] = hist_px
+            shares_rec = safe_float(rec.get("shares_outstanding")) or cur_shares
+            if hist_px is not None and shares_rec is not None and shares_rec > 0:
+                hist_quote["market_cap"] = hist_px * shares_rec
+            elif (
+                hist_px is not None
+                and cur_price
+                and cur_price > 0
+                and safe_float(quote.get("market_cap"))
+            ):
+                hist_quote["market_cap"] = float(quote["market_cap"]) * (hist_px / cur_price)
+
+            slice_funds = {
+                "annual": annual_sorted[: annual_cutoff_idx + offset + 1],
+                "ttm": rec,
+            }
+            try:
+                hist_scores = score_equity(hist_quote, slice_funds, sector_averages=None)
+                g_val = safe_float((hist_scores.get("global") or {}).get("score"))
+                if g_val is not None:
+                    points.append(
+                        {
+                            "label": yr_label,
+                            "date": target_dt,
+                            "score_global": round(g_val, 1),
+                            "score_valuation": safe_float((hist_scores.get("valuation") or {}).get("score")),
+                            "score_growth": safe_float((hist_scores.get("growth") or {}).get("score")),
+                            "score_quality": safe_float((hist_scores.get("quality") or {}).get("score")),
+                            "score_health": safe_float((hist_scores.get("health") or {}).get("score")),
+                            "price": round(hist_px, 2) if hist_px is not None else None,
+                            "source": "annual",
+                        }
+                    )
+            except Exception:
+                continue
+
+    today_str = utc_now().strftime("%Y-%m-%d")
+    last_annual_date = points[-1]["date"] if points else ""
+    db_snaps = (
+        db.query(ScoreSnapshot)
+        .filter(ScoreSnapshot.ticker == sym)
+        .order_by(ScoreSnapshot.snapshot_date.asc())
+        .all()
+    )
+    for snap in db_snaps:
+        if snap.snapshot_date == today_str:
+            continue
+        if last_annual_date and snap.snapshot_date <= last_annual_date:
+            continue
+        if snap.score_global is not None:
+            points.append(
+                {
+                    "label": snap.snapshot_date,
+                    "date": snap.snapshot_date,
+                    "score_global": round(float(snap.score_global), 1),
+                    "score_valuation": safe_float(snap.score_valuation),
+                    "score_growth": safe_float(snap.score_growth),
+                    "score_quality": safe_float(snap.score_quality),
+                    "score_health": safe_float(snap.score_health),
+                    "price": round(_closest_price(snap.snapshot_date), 2)
+                    if _closest_price(snap.snapshot_date) is not None
+                    else None,
+                    "source": "snapshot",
+                }
+            )
+
+    live_g = safe_float((current_scores.get("global") or {}).get("score"))
+    if live_g is not None:
+        points.append(
+            {
+                "label": "Actuel",
+                "date": today_str,
+                "score_global": round(live_g, 1),
+                "score_valuation": safe_float((current_scores.get("valuation") or {}).get("score")),
+                "score_growth": safe_float((current_scores.get("growth") or {}).get("score")),
+                "score_quality": safe_float((current_scores.get("quality") or {}).get("score")),
+                "score_health": safe_float((current_scores.get("health") or {}).get("score")),
+                "price": round(cur_price, 2) if cur_price is not None else None,
+                "source": "live",
+            }
+        )
+
+    trend_delta_pts: Optional[float] = None
+    trend_label = "Stable"
+    scored_pts = [p["score_global"] for p in points if p.get("score_global") is not None]
+    if len(scored_pts) >= 2:
+        trend_delta_pts = round(scored_pts[-1] - scored_pts[0], 1)
+        if trend_delta_pts >= 4.0:
+            trend_label = "En amélioration"
+        elif trend_delta_pts <= -4.0:
+            trend_label = "En baisse"
+
+    return sanitize_for_json(
+        {
+            "ticker": sym,
+            "asset_type": asset_type,
+            "points": points,
+            "trend_delta_pts": trend_delta_pts,
+            "trend_label": trend_label,
+            "updated_at": utc_now().isoformat(),
+        }
+    )

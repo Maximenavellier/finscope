@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import { ColdStartBanner } from "@/components/layout/ColdStartBanner";
 import { CurrencyProvider } from "@/components/layout/CurrencyProvider";
+import { MobileBottomNav } from "@/components/layout/MobileBottomNav";
 import { Navbar } from "@/components/layout/Navbar";
 import { PinGateModal } from "@/components/layout/PinGateModal";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
@@ -57,7 +58,10 @@ export default function RootLayout({
             <Navbar />
             <ColdStartBanner />
             <PinGateModal />
-            <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+            <main className="mx-auto max-w-7xl px-3 py-4 pb-24 sm:px-6 sm:py-6 md:pb-8 lg:px-8">
+              {children}
+            </main>
+            <MobileBottomNav />
           </CurrencyProvider>
         </ThemeProvider>
       </body>

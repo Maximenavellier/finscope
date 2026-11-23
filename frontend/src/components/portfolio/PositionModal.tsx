@@ -47,6 +47,8 @@ export function PositionModal({
   const [investedAmount, setInvestedAmount] = useState("");
   const [currency, setCurrency] = useState("EUR");
   const [purchaseDate, setPurchaseDate] = useState("");
+  const [feesEur, setFeesEur] = useState("1");
+  const [feesTouched, setFeesTouched] = useState(false);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +70,8 @@ export function PositionModal({
       );
       setCurrency(initialPosition.currency === "USD" ? "USD" : "EUR");
       setPurchaseDate(initialPosition.purchase_date || "");
+      setFeesEur(String(initialPosition.fees_eur ?? 0));
+      setFeesTouched(true);
       setNotes(initialPosition.notes || "");
     } else {
       setTicker(defaultTicker || "");
@@ -79,6 +83,8 @@ export function PositionModal({
       setInvestedAmount("");
       setCurrency(defaultCurrency === "USD" ? "USD" : "EUR");
       setPurchaseDate(todayIso());
+      setFeesEur(defaultEnvelope === "CTO" ? "1" : "0");
+      setFeesTouched(false);
       setNotes("");
     }
   }, [open, initialPosition, defaultTicker, defaultAssetType, defaultEnvelope, defaultCurrency, defaultPru]);
@@ -119,6 +125,7 @@ export function PositionModal({
     const qtyNum = Number(quantity.replace(",", "."));
     const pruNum = Number(pru.replace(",", "."));
     const amtNum = Number(investedAmount.replace(",", "."));
+    const feesNum = Math.max(0, Number(feesEur.replace(",", ".")) || 0);
 
     if (mode === "qty_pru") {
       if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isFinite(pruNum) || pruNum <= 0) {
@@ -143,6 +150,7 @@ export function PositionModal({
           clear_quantity_pru: mode === "amount",
           currency,
           purchase_date: purchaseDate.trim() || "",
+          fees_eur: feesNum,
           notes: notes.trim() || "",
         });
       } else {
@@ -155,6 +163,7 @@ export function PositionModal({
           invested_amount: mode === "amount" ? amtNum : undefined,
           currency,
           purchase_date: purchaseDate.trim() || undefined,
+          fees_eur: feesNum,
           notes: notes.trim() || undefined,
         });
       }
@@ -173,7 +182,7 @@ export function PositionModal({
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -214,9 +223,11 @@ export function PositionModal({
                     <button
                       type="button"
                       onClick={() => {
+                        const nextEnv = s.pea_eligible ? "PEA" : "CTO";
                         setTicker(s.ticker);
                         setAssetType(s.asset_type === "ETF" ? "ETF" : "EQUITY");
-                        setEnvelope(s.pea_eligible ? "PEA" : "CTO");
+                        setEnvelope(nextEnv);
+                        if (!feesTouched) setFeesEur(nextEnv === "CTO" ? "1" : "0");
                         setSuggestions([]);
                       }}
                       className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
@@ -246,7 +257,12 @@ export function PositionModal({
                   <button
                     key={env}
                     type="button"
-                    onClick={() => setEnvelope(env)}
+                    onClick={() => {
+                      setEnvelope(env);
+                      if (!isEdit && !feesTouched) {
+                        setFeesEur(env === "CTO" ? "1" : "0");
+                      }
+                    }}
                     className={cn(
                       "rounded-lg py-1.5 text-xs font-semibold transition-colors cursor-pointer",
                       envelope === env
@@ -403,18 +419,43 @@ export function PositionModal({
             )}
           </div>
 
-          {/* Notes */}
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-              Notes (optionnel)
-            </label>
-            <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Thèse d'investissement..."
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-            />
+          {/* Frais de courtage + Notes */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[0.9fr_1.3fr]">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-1">
+                <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Frais (€)
+                </label>
+                <span className="text-[10px] text-slate-400">
+                  {envelope === "CTO" ? "1 € auto CTO" : "0 € PEA"}
+                </span>
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={feesEur}
+                onChange={(e) => {
+                  setFeesEur(e.target.value);
+                  setFeesTouched(true);
+                }}
+                placeholder="1"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium tabular-nums text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                Notes (optionnel)
+              </label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Thèse d'investissement..."
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+            </div>
           </div>
 
           {error && (

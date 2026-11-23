@@ -46,7 +46,7 @@ export function PortfolioPerformanceCard({
   const [benchmark, setBenchmark] = useState("^GSPC");
   const [customQuery, setCustomQuery] = useState("");
   const [suggestions, setSuggestions] = useState<SearchAssetItem[]>([]);
-  const [scaleMode, setScaleMode] = useState<"base100" | "pct">("base100");
+  const [scaleMode, setScaleMode] = useState<"base100" | "pct" | "value">("base100");
   const [calcMode, setCalcMode] = useState<"real" | "backtest">("real");
   const [data, setData] = useState<PortfolioPerformanceResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -121,10 +121,18 @@ export function PortfolioPerformanceCard({
     if (!data || data.points.length === 0) return {};
     const dates = data.points.map((p) => formatDateFR(p.date));
     const portSeries = data.points.map((p) =>
-      scaleMode === "base100" ? p.portfolio_base100 : p.portfolio_pct
+      scaleMode === "value"
+        ? (p.portfolio_value ?? null)
+        : scaleMode === "base100"
+          ? p.portfolio_base100
+          : p.portfolio_pct
     );
-    const benchSeries = data.points.map((p) =>
-      scaleMode === "base100" ? p.benchmark_base100 : p.benchmark_pct
+    const secondSeries = data.points.map((p) =>
+      scaleMode === "value"
+        ? (p.invested_value ?? null)
+        : scaleMode === "base100"
+          ? p.benchmark_base100
+          : p.benchmark_pct
     );
 
     const textColor = isDark ? "#94A3B8" : "#64748B";
@@ -148,6 +156,44 @@ export function PortfolioPerformanceCard({
           if (typeof idx !== "number" || !data.points[idx]) return "";
           const pt = data.points[idx];
           const dateLabel = formatDateFR(pt.date);
+
+          if (scaleMode === "value") {
+            const pVal = isValidNumber(pt.portfolio_value) ? pt.portfolio_value : null;
+            const iVal = isValidNumber(pt.invested_value) ? pt.invested_value : null;
+            const gainEur = pVal !== null && iVal !== null ? pVal - iVal : null;
+            const gainOnTotalPct =
+              gainEur !== null && pVal !== null && pVal > 0 ? (gainEur / pVal) * 100 : null;
+            const gainOnCostPct =
+              gainEur !== null && iVal !== null && iVal > 0 ? (gainEur / iVal) * 100 : null;
+
+            return [
+              `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
+              `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;">` +
+                `<span><span style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:#2563EB;margin-right:6px;"></span>Valeur actuelle</span>` +
+                `<span style="font-weight:700;font-variant-numeric:tabular-nums;">${formatPrice(pVal, chartCurrency)}</span>` +
+                `</div>`,
+              `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:2px;">` +
+                `<span><span style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:#10B981;margin-right:6px;"></span>Capital investi</span>` +
+                `<span style="font-weight:600;font-variant-numeric:tabular-nums;">${formatPrice(iVal, chartCurrency)}</span>` +
+                `</div>`,
+              gainEur !== null
+                ? `<div style="margin-top:4px;padding-top:4px;border-top:1px solid ${splitColor};font-size:11px;font-variant-numeric:tabular-nums;color:${
+                    gainEur >= 0 ? "#10B981" : "#F43F5E"
+                  };font-weight:600;">Plus-value : ${gainEur > 0 ? "+" : ""}${formatPrice(
+                    gainEur,
+                    chartCurrency
+                  )}${
+                    gainOnTotalPct !== null
+                      ? ` (${formatPercent(gainOnTotalPct, { signed: true })} du total)`
+                      : ""
+                  }${
+                    gainOnCostPct !== null
+                      ? ` · ${formatPercent(gainOnCostPct, { signed: true })} s/ investi`
+                      : ""
+                  }</div>`
+                : "",
+            ].join("");
+          }
 
           const pValStr = isValidNumber(pt.portfolio_value)
             ? formatPrice(pt.portfolio_value, chartCurrency)
@@ -213,7 +259,12 @@ export function PortfolioPerformanceCard({
         axisLabel: {
           color: textColor,
           fontSize: 10,
-          formatter: (v: number) => (scaleMode === "base100" ? `${v}` : `${v} %`),
+          formatter: (v: number) =>
+            scaleMode === "value"
+              ? `${Math.round(v).toLocaleString("fr-FR")} ${chartCurrency === "USD" ? "$" : "€"}`
+              : scaleMode === "base100"
+                ? `${v}`
+                : `${v} %`,
         },
         splitLine: { lineStyle: { color: splitColor } },
       },
@@ -227,7 +278,7 @@ export function PortfolioPerformanceCard({
         : {}),
       series: [
         {
-          name: "Mon Portefeuille",
+          name: scaleMode === "value" ? "Valeur actuelle" : "Mon Portefeuille",
           type: "line",
           smooth: 0.15,
           showSymbol: false,
@@ -247,22 +298,31 @@ export function PortfolioPerformanceCard({
               ],
             },
           },
-          markLine: {
-            symbol: ["none", "none"],
-            silent: true,
-            lineStyle: { color: splitColor, type: "dashed", width: 1 },
-            label: { show: false },
-            data: [{ yAxis: scaleMode === "base100" ? 100 : 0 }],
-          },
+          ...(scaleMode !== "value"
+            ? {
+                markLine: {
+                  symbol: ["none", "none"],
+                  silent: true,
+                  lineStyle: { color: splitColor, type: "dashed", width: 1 },
+                  label: { show: false },
+                  data: [{ yAxis: scaleMode === "base100" ? 100 : 0 }],
+                },
+              }
+            : {}),
         },
         {
-          name: data.benchmark_name || data.benchmark,
+          name: scaleMode === "value" ? "Capital investi" : data.benchmark_name || data.benchmark,
           type: "line",
-          smooth: 0.15,
+          smooth: scaleMode === "value" ? false : 0.15,
+          step: scaleMode === "value" ? "end" : false,
           showSymbol: false,
-          data: benchSeries,
-          lineStyle: { color: "#94A3B8", width: 2, type: "dashed" },
-          itemStyle: { color: "#94A3B8" },
+          data: secondSeries,
+          lineStyle: {
+            color: scaleMode === "value" ? "#10B981" : "#94A3B8",
+            width: 2,
+            type: "dashed",
+          },
+          itemStyle: { color: scaleMode === "value" ? "#10B981" : "#94A3B8" },
         },
       ],
     };
@@ -298,6 +358,7 @@ export function PortfolioPerformanceCard({
             [
               { id: "base100", label: "Base 100" },
               { id: "pct", label: "Var. %" },
+              { id: "value", label: `Patrimoine (${displayCurrency === "USD" ? "$" : "€"})` },
             ] as const
           ).map((m) => (
             <button
@@ -413,17 +474,30 @@ export function PortfolioPerformanceCard({
   const hasPoints = Boolean(data && data.points.length >= 2);
   const alpha = data?.alpha_pts;
   const avgAlpha = data?.avg_alpha_pts;
+  const lastPt = hasPoints && data ? data.points[data.points.length - 1] : null;
+  const lastVal = lastPt && isValidNumber(lastPt.portfolio_value) ? lastPt.portfolio_value : null;
+  const lastInv = lastPt && isValidNumber(lastPt.invested_value) ? lastPt.invested_value : null;
+  const totalGain = lastVal !== null && lastInv !== null ? lastVal - lastInv : null;
+  const gainPctOfTotal =
+    totalGain !== null && lastVal !== null && lastVal > 0 ? (totalGain / lastVal) * 100 : null;
+  const chartCur = data?.currency || displayCurrency;
 
   return (
     <ExpandableChartCard
-      title="Performance Portefeuille vs Benchmark"
+      title={
+        scaleMode === "value"
+          ? "Évolution du Patrimoine : Investi vs Valeur"
+          : "Performance Portefeuille vs Benchmark"
+      }
       subtitle={`${
         data?.calculation_label ||
         (calcMode === "real"
           ? "Performance réelle (selon dates d'achat)"
           : "Backtest composition actuelle")
-      } · ${displayCurrency === "USD" ? "USD ($)" : "EUR (€)"} · Indice : ${data?.benchmark_name || benchmark}`}
-      tooltip="Mesure la vraie performance de votre portefeuille en TWR (Time-Weighted Return) : chaque titre entre à sa date d'achat sans créer de faux saut lorsque vous ajoutez du capital. Le mode Backtest simule vos lignes actuelles sur toute la période."
+      } · ${displayCurrency === "USD" ? "USD ($)" : "EUR (€)"}${
+        scaleMode === "value" ? "" : ` · Indice : ${data?.benchmark_name || benchmark}`
+      }`}
+      tooltip="Mesure la vraie performance de votre portefeuille en TWR (Time-Weighted Return) : chaque titre entre à sa date d'achat sans créer de faux saut lorsque vous ajoutez du capital. Le mode Patrimoine compare directement votre capital investi à la valeur actuelle."
       option={compactOption}
       modalOption={modalOption}
       topControls={topControls}
@@ -434,10 +508,31 @@ export function PortfolioPerformanceCard({
           ? "Ajoutez au moins une position pour comparer votre portefeuille au marché."
           : error || (loading ? "Calcul de l'historique en cours..." : "Données insuffisantes pour cette période.")
       }
-      downloadName={`portefeuille-vs-${benchmark}-${period}`}
+      downloadName={`portefeuille-${scaleMode === "value" ? "patrimoine" : benchmark}-${period}`}
       footer={
         data && hasPoints ? (
           <div className="flex flex-wrap items-center gap-2">
+            {lastInv !== null && lastVal !== null && totalGain !== null && (
+              <>
+                <Badge variant="secondary" className="tabular-nums">
+                  Investi : {formatPrice(lastInv, chartCur)}
+                </Badge>
+                <Badge variant="outline" className="tabular-nums font-semibold">
+                  Valeur : {formatPrice(lastVal, chartCur)}
+                </Badge>
+                <Badge
+                  variant={totalGain >= 0 ? "emerald" : "coral"}
+                  className="tabular-nums font-semibold"
+                  title="Montant des plus-values et part (% de plus-value) rapportée à la valeur totale actuelle du portefeuille"
+                >
+                  Plus-value : {totalGain > 0 ? "+" : ""}
+                  {formatPrice(totalGain, chartCur)}
+                  {gainPctOfTotal !== null
+                    ? ` (${formatPercent(gainPctOfTotal, { signed: true })} du total)`
+                    : ""}
+                </Badge>
+              </>
+            )}
             <Badge variant={(data.portfolio_perf_pct ?? 0) >= 0 ? "emerald" : "coral"}>
               Perf Portefeuille : {formatPercent(data.portfolio_perf_pct, { signed: true })}
             </Badge>
