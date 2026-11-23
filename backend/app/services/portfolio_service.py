@@ -1142,6 +1142,8 @@ class PortfolioService:
                             "benchmark_base100": round(b_b100, 2),
                             "portfolio_pct": round(p_b100 - 100.0, 2),
                             "benchmark_pct": round(b_b100 - 100.0, 2),
+                            "portfolio_value": round(totals[i], 2),
+                            "benchmark_price": round(bench_closes[i], 2),
                         }
                     )
                 return out
@@ -1163,6 +1165,11 @@ class PortfolioService:
 
             twr = 100.0
             base_bench = bench_closes[i0]
+            v_start_val = sum(
+                e["qty"] * e["closes"][i0]
+                for e in pos_entries
+                if e["real_start_date"] <= bench_dates[i0]
+            )
             out = [
                 {
                     "date": bench_dates[i0],
@@ -1170,10 +1177,13 @@ class PortfolioService:
                     "benchmark_base100": 100.0,
                     "portfolio_pct": 0.0,
                     "benchmark_pct": 0.0,
+                    "portfolio_value": round(v_start_val, 2),
+                    "benchmark_price": round(bench_closes[i0], 2),
                 }
             ]
 
             for i in range(i0 + 1, len(bench_dates)):
+                dt_str = bench_dates[i]
                 prev_dt = bench_dates[i - 1]
                 # Positions already held at close of day i-1 drive day i return;
                 # new buys on day i count as end-of-day inflows (excluded from day i return).
@@ -1182,14 +1192,21 @@ class PortfolioService:
                 v_held_today = sum(e["qty"] * e["closes"][i] for e in held_prev)
                 if v_prev > 0 and v_held_today > 0:
                     twr = twr * (v_held_today / v_prev)
+                v_day = sum(
+                    e["qty"] * e["closes"][i]
+                    for e in pos_entries
+                    if e["real_start_date"] <= dt_str
+                )
                 b_b100 = (bench_closes[i] / base_bench) * 100.0
                 out.append(
                     {
-                        "date": bench_dates[i],
+                        "date": dt_str,
                         "portfolio_base100": round(twr, 2),
                         "benchmark_base100": round(b_b100, 2),
                         "portfolio_pct": round(twr - 100.0, 2),
                         "benchmark_pct": round(b_b100 - 100.0, 2),
+                        "portfolio_value": round(v_day, 2),
+                        "benchmark_price": round(bench_closes[i], 2),
                     }
                 )
             return out

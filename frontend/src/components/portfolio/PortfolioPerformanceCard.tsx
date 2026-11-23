@@ -8,7 +8,7 @@ import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
 import { ExpandableChartCard } from "@/components/stock/ExpandableChartCard";
 import { Badge } from "@/components/ui/badge";
 import { getPortfolioPerformance, searchAssets } from "@/lib/api";
-import { formatDateFR, formatPercent, isValidNumber } from "@/lib/formatters";
+import { formatDateFR, formatPercent, formatPrice, isValidNumber } from "@/lib/formatters";
 import type { PortfolioPerformanceResponse, SearchAssetItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -129,6 +129,9 @@ export function PortfolioPerformanceCard({
 
     const textColor = isDark ? "#94A3B8" : "#64748B";
     const splitColor = isDark ? "rgba(148,163,184,0.12)" : "rgba(148,163,184,0.22)";
+    const chartCurrency = data.currency || displayCurrency;
+    const isIndexBench = data.benchmark.startsWith("^");
+    const benchLabelSafe = (data.benchmark_name || data.benchmark).replace(/</g, "&lt;");
 
     return {
       animationDuration: 280,
@@ -137,12 +140,54 @@ export function PortfolioPerformanceCard({
         backgroundColor: isDark ? "#0F172A" : "#FFFFFF",
         borderColor: isDark ? "#334155" : "#E2E8F0",
         textStyle: { color: isDark ? "#F8FAFC" : "#0F172A", fontSize: 12 },
-        valueFormatter: (v) =>
-          isValidNumber(v)
-            ? scaleMode === "base100"
-              ? `${v.toFixed(1).replace(".", ",")} pts`
-              : `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} %`
-            : "—",
+        formatter: (params: unknown) => {
+          const items = (Array.isArray(params) ? params : [params]) as Array<{
+            dataIndex?: number;
+          }>;
+          const idx = items[0]?.dataIndex;
+          if (typeof idx !== "number" || !data.points[idx]) return "";
+          const pt = data.points[idx];
+          const dateLabel = formatDateFR(pt.date);
+
+          const pValStr = isValidNumber(pt.portfolio_value)
+            ? formatPrice(pt.portfolio_value, chartCurrency)
+            : null;
+          const pPctStr = formatPercent(pt.portfolio_pct, { signed: true });
+          const pPerfStr =
+            scaleMode === "base100"
+              ? `${pt.portfolio_base100.toFixed(1).replace(".", ",")} pts (${pPctStr})`
+              : pPctStr;
+
+          const bPriceStr = isValidNumber(pt.benchmark_price)
+            ? isIndexBench
+              ? pt.benchmark_price.toLocaleString("fr-FR", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })
+              : formatPrice(pt.benchmark_price, chartCurrency)
+            : null;
+          const bPctStr = formatPercent(pt.benchmark_pct, { signed: true });
+          const bPerfStr =
+            scaleMode === "base100"
+              ? `${pt.benchmark_base100.toFixed(1).replace(".", ",")} pts (${bPctStr})`
+              : bPctStr;
+
+          return [
+            `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
+            `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;">` +
+              `<span><span style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:#2563EB;margin-right:6px;"></span>Mon Portefeuille</span>` +
+              `<span style="font-weight:600;font-variant-numeric:tabular-nums;">${
+                pValStr ? `${pValStr} · ` : ""
+              }${pPerfStr}</span>` +
+              `</div>`,
+            `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:2px;">` +
+              `<span><span style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:#94A3B8;margin-right:6px;"></span>${benchLabelSafe}</span>` +
+              `<span style="font-weight:600;font-variant-numeric:tabular-nums;">${
+                bPriceStr ? `${bPriceStr} · ` : ""
+              }${bPerfStr}</span>` +
+              `</div>`,
+          ].join("");
+        },
       },
       legend: {
         top: 0,
@@ -223,8 +268,8 @@ export function PortfolioPerformanceCard({
     };
   };
 
-  const compactOption = useMemo(() => makeOption(false), [data, scaleMode, isDark]);
-  const modalOption = useMemo(() => makeOption(true), [data, scaleMode, isDark]);
+  const compactOption = useMemo(() => makeOption(false), [data, scaleMode, isDark, displayCurrency]);
+  const modalOption = useMemo(() => makeOption(true), [data, scaleMode, isDark, displayCurrency]);
 
   const topControls = (
     <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">

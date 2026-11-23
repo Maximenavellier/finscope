@@ -458,6 +458,8 @@ export interface PortfolioPerformancePoint {
   benchmark_base100: number;
   portfolio_pct: number;
   benchmark_pct: number;
+  portfolio_value?: number | null;
+  benchmark_price?: number | null;
 }
 
 export interface PeriodicReturnItem {

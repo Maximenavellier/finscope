@@ -306,9 +306,15 @@ def test_portfolio_performance_twr_respects_purchase_dates_without_spikes(client
     assert "Performance réelle" in real_data["calculation_label"]
     assert len(real_data["points"]) == 3
     assert real_data["points"][0]["portfolio_base100"] == pytest.approx(100.0)
+    assert real_data["points"][0]["portfolio_value"] == pytest.approx(100.0, abs=0.05)
+    assert real_data["points"][0]["benchmark_price"] == pytest.approx(1000.0, abs=0.05)
     assert real_data["points"][1]["portfolio_base100"] == pytest.approx(110.0)
+    assert real_data["points"][1]["portfolio_value"] == pytest.approx(10110.0, abs=0.05)
+    assert real_data["points"][1]["benchmark_price"] == pytest.approx(1000.0, abs=0.05)
     expected_final_b100 = 110.0 * (11110.0 / 10110.0)
     assert real_data["points"][2]["portfolio_base100"] == pytest.approx(expected_final_b100, abs=0.05)
+    assert real_data["points"][2]["portfolio_value"] == pytest.approx(11110.0, abs=0.05)
+    assert real_data["points"][2]["benchmark_price"] == pytest.approx(1020.0, abs=0.05)
     assert real_data["benchmark_perf_pct"] == pytest.approx(2.0, abs=0.02)
 
     # Explicit backtest mode ignores purchase_date (computes combined 1*100+50*200 -> 1*110+50*220)
@@ -319,6 +325,8 @@ def test_portfolio_performance_twr_respects_purchase_dates_without_spikes(client
     assert bt_data["calculation_label"] == "Backtest composition actuelle"
     expected_bt_pct = ((11110.0 / 10100.0) - 1.0) * 100.0
     assert bt_data["portfolio_perf_pct"] == pytest.approx(expected_bt_pct, abs=0.05)
+    assert bt_data["points"][0]["portfolio_value"] == pytest.approx(10100.0, abs=0.05)
+    assert bt_data["points"][2]["portfolio_value"] == pytest.approx(11110.0, abs=0.05)
 
     # When NO position has a purchase_date (legacy rows), even mode=real reports Backtest composition actuelle
     from app.db.models import PortfolioPosition

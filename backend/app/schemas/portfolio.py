@@ -125,6 +125,8 @@ class PortfolioPerformancePoint(BaseModel):
     benchmark_base100: float
     portfolio_pct: float
     benchmark_pct: float
+    portfolio_value: Optional[float] = None
+    benchmark_price: Optional[float] = None
 
 
 class PeriodicReturnItem(BaseModel):
