@@ -1,9 +1,11 @@
 "use client";
 
-import { Target } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Loader2, Target, Wallet } from "lucide-react";
 import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
 import { InfoTooltip } from "@/components/stock/InfoTooltip";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   formatCompactNumber,
@@ -22,6 +24,7 @@ interface WeightedStatsCardProps {
   elapsedYears?: number | null;
   targetAnnualReturnPct?: number;
   loadingReturn?: boolean;
+  onSaveCash?: (cashEur: number) => Promise<void>;
 }
 
 export function WeightedStatsCard({
@@ -30,8 +33,31 @@ export function WeightedStatsCard({
   elapsedYears,
   targetAnnualReturnPct = 8,
   loadingReturn = false,
+  onSaveCash,
 }: WeightedStatsCardProps) {
   const { displayCurrency, convertAmount } = useDisplayCurrency();
+  const [cashInput, setCashInput] = useState(String(stats.cash_eur ?? 0));
+  const [savingCash, setSavingCash] = useState(false);
+  const [cashSavedFeedback, setCashSavedFeedback] = useState(false);
+
+  useEffect(() => {
+    setCashInput(String(stats.cash_eur ?? 0));
+  }, [stats.cash_eur]);
+
+  const handleCashSave = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!onSaveCash || savingCash) return;
+    const raw = Number(cashInput.replace(",", "."));
+    const cleaned = Number.isFinite(raw) && raw >= 0 ? Number(raw.toFixed(2)) : 0;
+    setSavingCash(true);
+    try {
+      await onSaveCash(cleaned);
+      setCashSavedFeedback(true);
+      setTimeout(() => setCashSavedFeedback(false), 1800);
+    } finally {
+      setSavingCash(false);
+    }
+  };
   const conv = (v: number | null | undefined) => convertAmount(v, "EUR", displayCurrency);
   const pnlPositive = stats.total_pnl_eur >= 0;
   const avgScore = isValidNumber(stats.avg_score_global) ? stats.avg_score_global : null;
@@ -94,6 +120,11 @@ export function WeightedStatsCard({
                 ? ` (dt ${formatPrice(conv(stats.total_fees_eur), displayCurrency)} frais)`
                 : ""}
             </p>
+            {(stats.cash_eur ?? 0) > 0 && (
+              <p className="text-[10px] tabular-nums text-slate-400">
+                Dont espèces : {formatPrice(conv(stats.cash_eur), displayCurrency)}
+              </p>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/40">
@@ -183,6 +214,41 @@ export function WeightedStatsCard({
             </div>
           </div>
         </div>
+
+        {/* Editable Cash Reserve (PEA / CTO uninvested cash) */}
+        {onSaveCash && (
+          <form
+            onSubmit={handleCashSave}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-950/40"
+          >
+            <div className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                Cash disponible (€)
+              </span>
+              <InfoTooltip text="Espèces non investies sur vos comptes PEA/CTO. Ce montant est ajouté au Capital investi et à la Valeur totale sans fausser le calcul de plus-value boursière." />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={cashInput}
+                onChange={(e) => setCashInput(e.target.value)}
+                placeholder="0.00"
+                className="w-28 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-right text-xs font-semibold tabular-nums text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
+              <Button type="submit" variant="outline" size="sm" disabled={savingCash}>
+                {savingCash ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : cashSavedFeedback ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-600" />
+                ) : null}
+                <span>{cashSavedFeedback ? "Enregistré" : "Enregistrer"}</span>
+              </Button>
+            </div>
+          </form>
+        )}
 
         {/* Annualized Return (TWR / CAGR) vs Target */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-950/40">

@@ -319,6 +319,13 @@ export async function getPortfolio(refresh = false): Promise<PortfolioDashboardR
   return executeFetch<PortfolioDashboardResponse>(`/api/portfolio?refresh=${refresh}`);
 }
 
+export async function savePortfolioCash(cash_eur: number): Promise<{ cash_eur: number }> {
+  return executeFetch<{ cash_eur: number }>("/api/portfolio/cash", {
+    method: "PUT",
+    body: JSON.stringify({ cash_eur }),
+  });
+}
+
 export async function getPortfolioPerformance(
   period = "1Y",
   benchmark = "^GSPC",

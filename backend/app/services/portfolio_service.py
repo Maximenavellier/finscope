@@ -369,8 +369,30 @@ class PortfolioService:
             "created_at": (sale.created_at or utc_now()).isoformat(),
         }
 
+    @staticmethod
+    def get_portfolio_cash(db: Session) -> float:
+        row = db.get(UserSetting, "portfolio_cash")
+        if row and isinstance(row.value, dict):
+            val = safe_float(row.value.get("cash_eur"))
+            if val is not None and val >= 0:
+                return round(val, 2)
+        return 0.0
+
+    @staticmethod
+    def save_portfolio_cash(db: Session, cash_eur: float) -> dict[str, float]:
+        cleaned = round(max(0.0, float(cash_eur or 0.0)), 2)
+        row = db.get(UserSetting, "portfolio_cash")
+        if row is None:
+            row = UserSetting(key="portfolio_cash", value={"cash_eur": cleaned})
+            db.add(row)
+        else:
+            row.value = {"cash_eur": cleaned}
+        db.commit()
+        return {"cash_eur": cleaned}
+
     def get_portfolio_dashboard(self, db: Session, refresh: bool = False) -> dict[str, Any]:
         positions = db.query(PortfolioPosition).order_by(PortfolioPosition.id.asc()).all()
+        cash_eur = self.get_portfolio_cash(db)
         sale_rows = (
             db.query(PortfolioSale)
             .order_by(PortfolioSale.sale_date.desc(), PortfolioSale.id.desc())
@@ -387,8 +409,9 @@ class PortfolioService:
                 {
                     "eurusd_rate": eurusd,
                     "stats": {
-                        "total_value_eur": 0.0,
-                        "total_cost_eur": 0.0,
+                        "total_value_eur": round(cash_eur, 2),
+                        "total_cost_eur": round(cash_eur, 2),
+                        "cash_eur": round(cash_eur, 2),
                         "total_fees_eur": 0.0,
                         "total_pnl_eur": 0.0,
                         "total_pnl_pct": None,
@@ -498,8 +521,10 @@ class PortfolioService:
             )
 
         valued_items.sort(key=lambda x: x["current_value_eur"], reverse=True)
-        total_value = sum(item["current_value_eur"] for item in valued_items)
-        total_cost = sum(item["cost_basis_eur"] for item in valued_items)
+        positions_total_value = sum(item["current_value_eur"] for item in valued_items)
+        positions_total_cost = sum(item["cost_basis_eur"] for item in valued_items)
+        total_value = positions_total_value + cash_eur
+        total_cost = positions_total_cost + cash_eur
         total_fees = sum(item["fees_eur"] for item in valued_items)
         total_pnl = total_value - total_cost
         total_pnl_pct = ((total_pnl / total_cost) * 100.0) if total_cost > 0 else None
@@ -515,20 +540,30 @@ class PortfolioService:
 
         for item in valued_items:
             val = item["current_value_eur"]
-            item["weight_pct"] = round((val / total_value) * 100.0, 2) if total_value > 0 else 0.0
+            item["weight_pct"] = (
+                round((val / positions_total_value) * 100.0, 2) if positions_total_value > 0 else 0.0
+            )
             by_position_map[item["ticker"]] += val
             by_envelope_map[item["envelope"]] += val
             if item["asset_type"] != "ETF":
                 sec_label = item["sector"] or "Autre"
                 by_sector_map[sec_label] += val
 
-        by_position_slices = _build_donut_slices(by_position_map, total_value)
-        by_envelope_slices = _build_donut_slices(by_envelope_map, total_value)
+        by_position_slices = _build_donut_slices(by_position_map, positions_total_value)
+        by_envelope_slices = _build_donut_slices(by_envelope_map, positions_total_value)
         by_sector_slices = _build_donut_slices(by_sector_map, equities_total)
 
         top5_weight_pct = round(sum(s["weight_pct"] for s in by_position_slices[:5]), 2)
-        equities_weight_pct = round((equities_total / total_value) * 100.0, 2) if total_value > 0 else 0.0
-        etfs_weight_pct = round((etfs_total / total_value) * 100.0, 2) if total_value > 0 else 0.0
+        equities_weight_pct = (
+            round((equities_total / positions_total_value) * 100.0, 2)
+            if positions_total_value > 0
+            else 0.0
+        )
+        etfs_weight_pct = (
+            round((etfs_total / positions_total_value) * 100.0, 2)
+            if positions_total_value > 0
+            else 0.0
+        )
 
         # Equities-only weighted fundamental stats
         def eq_rows(getter: Callable[[dict[str, Any]], Optional[float]]) -> list[tuple[Optional[float], float]]:
@@ -559,6 +594,7 @@ class PortfolioService:
         stats = {
             "total_value_eur": round(total_value, 2),
             "total_cost_eur": round(total_cost, 2),
+            "cash_eur": round(cash_eur, 2),
             "total_fees_eur": round(total_fees, 2),
             "total_pnl_eur": round(total_pnl, 2),
             "total_pnl_pct": round(total_pnl_pct, 2) if total_pnl_pct is not None else None,
@@ -1059,6 +1095,8 @@ class PortfolioService:
 
         fx = market_data_service.get_eurusd_rate(db, refresh=refresh)
         eurusd = safe_float(fx.get("rate")) or 1.08
+        cash_eur = self.get_portfolio_cash(db)
+        cash_target = cash_eur * eurusd if cur_norm == "USD" else cash_eur
 
         unique_tickers = sorted({p.ticker for p in positions})
         bind = db.get_bind()
@@ -1245,7 +1283,7 @@ class PortfolioService:
                     return None
                 base_p = totals[i0]
                 base_b = bench_closes[i0]
-                inv_total = sum(e.get("cost", 0.0) for e in rich_entries)
+                inv_total = sum(e.get("cost", 0.0) for e in rich_entries) + cash_target
                 out: list[dict[str, Any]] = []
                 for i in range(i0, len(bench_dates)):
                     dt_str = bench_dates[i]
@@ -1258,7 +1296,7 @@ class PortfolioService:
                             "benchmark_base100": round(b_b100, 2),
                             "portfolio_pct": round(p_b100 - 100.0, 2),
                             "benchmark_pct": round(b_b100 - 100.0, 2),
-                            "portfolio_value": round(totals[i], 2),
+                            "portfolio_value": round(totals[i] + cash_target, 2),
                             "invested_value": round(inv_total, 2),
                             "benchmark_price": round(bench_closes[i], 2),
                         }
@@ -1282,15 +1320,21 @@ class PortfolioService:
 
             twr = 100.0
             base_bench = bench_closes[i0]
-            v_start_val = sum(
-                e["qty"] * e["closes"][i0]
-                for e in pos_entries
-                if e["real_start_date"] <= bench_dates[i0]
+            v_start_val = (
+                sum(
+                    e["qty"] * e["closes"][i0]
+                    for e in pos_entries
+                    if e["real_start_date"] <= bench_dates[i0]
+                )
+                + cash_target
             )
-            v_inv_start = sum(
-                e.get("cost", 0.0)
-                for e in pos_entries
-                if e["real_start_date"] <= bench_dates[i0]
+            v_inv_start = (
+                sum(
+                    e.get("cost", 0.0)
+                    for e in pos_entries
+                    if e["real_start_date"] <= bench_dates[i0]
+                )
+                + cash_target
             )
             out = [
                 {
@@ -1315,15 +1359,21 @@ class PortfolioService:
                 v_held_today = sum(e["qty"] * e["closes"][i] for e in held_prev)
                 if v_prev > 0 and v_held_today > 0:
                     twr = twr * (v_held_today / v_prev)
-                v_day = sum(
-                    e["qty"] * e["closes"][i]
-                    for e in pos_entries
-                    if e["real_start_date"] <= dt_str
+                v_day = (
+                    sum(
+                        e["qty"] * e["closes"][i]
+                        for e in pos_entries
+                        if e["real_start_date"] <= dt_str
+                    )
+                    + cash_target
                 )
-                v_inv_day = sum(
-                    e.get("cost", 0.0)
-                    for e in pos_entries
-                    if e["real_start_date"] <= dt_str
+                v_inv_day = (
+                    sum(
+                        e.get("cost", 0.0)
+                        for e in pos_entries
+                        if e["real_start_date"] <= dt_str
+                    )
+                    + cash_target
                 )
                 b_b100 = (bench_closes[i] / base_bench) * 100.0
                 out.append(

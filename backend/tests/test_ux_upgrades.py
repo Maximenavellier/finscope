@@ -187,6 +187,21 @@ def test_cto_fees_dividends_and_invested_value_curve(client, monkeypatch):
     assert pts[-1]["invested_value"] == pytest.approx(2002.0, abs=0.5)
     assert pts[-1]["portfolio_value"] == pytest.approx(2000.0, abs=0.5)
 
+    # Optional uninvested cash reserve adds to total_value and total_cost without changing total_pnl_eur
+    cash_res = client.put("/api/portfolio/cash", json={"cash_eur": 125.5})
+    assert cash_res.status_code == 200
+    assert cash_res.json() == {"cash_eur": 125.5}
+
+    dash3 = client.get("/api/portfolio").json()
+    assert dash3["stats"]["cash_eur"] == pytest.approx(125.5)
+    assert dash3["stats"]["total_cost_eur"] == pytest.approx(2002.0 + 125.5, abs=0.2)
+    assert dash3["stats"]["total_value_eur"] == pytest.approx(2000.0 + 125.5, abs=0.2)
+    assert dash3["stats"]["total_pnl_eur"] == pytest.approx(-2.0, abs=0.2)
+
+    perf_cash = client.get("/api/portfolio/performance?period=1Y&benchmark=%5EGSPC&currency=EUR&mode=real").json()
+    assert perf_cash["points"][-1]["invested_value"] == pytest.approx(2002.0 + 125.5, abs=0.5)
+    assert perf_cash["points"][-1]["portfolio_value"] == pytest.approx(2000.0 + 125.5, abs=0.5)
+
 
 def test_stock_score_history_and_news_endpoints(client, monkeypatch):
     dts = pd.date_range(start="2023-01-02", end="2025-12-31", freq="B")

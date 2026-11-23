@@ -79,6 +79,38 @@ function getAggregateHorizonSummary(
   };
 }
 
+function AssetLogo({
+  logoUrl,
+  ticker,
+  name,
+}: {
+  logoUrl?: string | null;
+  ticker: string;
+  name?: string | null;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  if (logoUrl && !imgFailed) {
+    return (
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700">
+        <img
+          src={logoUrl}
+          alt={name || ticker}
+          referrerPolicy="no-referrer"
+          onError={() => setImgFailed(true)}
+          className="h-full w-full object-contain"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+      {ticker.replace(/\..*$/, "").slice(0, 3)}
+    </div>
+  );
+}
+
 interface PositionsTableProps {
   positions: PortfolioPositionItem[];
   onReinforce: (pos: PortfolioPositionItem) => void;
@@ -165,22 +197,31 @@ export function PositionsTable({
                 return (
                   <div key={`m-${pos.id}`} className="space-y-2.5 px-4 py-3.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <Link href={`/stock/${encodeURIComponent(pos.ticker)}`} className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-sm font-bold text-slate-900 dark:text-white">
-                            {pos.ticker}
-                          </span>
-                          <Badge variant={pos.envelope === "PEA" ? "emerald" : "outline"}>
-                            {pos.envelope}
-                          </Badge>
-                          {pos.asset_type === "ETF" && <Badge variant="secondary">ETF</Badge>}
-                          <Badge variant={scoreVariant}>
-                            {score !== null ? `${Math.round(score)}/100` : "—"}
-                          </Badge>
+                      <Link
+                        href={`/stock/${encodeURIComponent(pos.ticker)}`}
+                        className="flex min-w-0 flex-1 items-start gap-2.5"
+                      >
+                        <AssetLogo logoUrl={pos.logo_url} ticker={pos.ticker} name={pos.name} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-sm font-bold text-slate-900 dark:text-white">
+                              {pos.ticker}
+                            </span>
+                            <Badge variant={pos.envelope === "PEA" ? "emerald" : "outline"}>
+                              {pos.envelope}
+                            </Badge>
+                            {pos.asset_type === "ETF" && <Badge variant="secondary">ETF</Badge>}
+                            <Badge variant={scoreVariant}>
+                              {score !== null ? `${Math.round(score)}/100` : "—"}
+                            </Badge>
+                          </div>
+                          {pos.name &&
+                            pos.name.trim().toUpperCase() !== pos.ticker.trim().toUpperCase() && (
+                              <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                {pos.name}
+                              </p>
+                            )}
                         </div>
-                        <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
-                          {pos.name}
-                        </p>
                       </Link>
 
                       <div className="text-right tabular-nums shrink-0">
@@ -285,17 +326,23 @@ export function PositionsTable({
                       <td className="px-4 py-3">
                         <Link
                           href={`/stock/${encodeURIComponent(pos.ticker)}`}
-                          className="group flex flex-col"
+                          className="group flex items-center gap-2.5"
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
-                              {pos.ticker}
-                            </span>
-                            {pos.asset_type === "ETF" && <Badge variant="secondary">ETF</Badge>}
+                          <AssetLogo logoUrl={pos.logo_url} ticker={pos.ticker} name={pos.name} />
+                          <div className="min-w-0 flex flex-col">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
+                                {pos.ticker}
+                              </span>
+                              {pos.asset_type === "ETF" && <Badge variant="secondary">ETF</Badge>}
+                            </div>
+                            {pos.name &&
+                              pos.name.trim().toUpperCase() !== pos.ticker.trim().toUpperCase() && (
+                                <span className="max-w-[210px] truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                  {pos.name}
+                                </span>
+                              )}
                           </div>
-                          <span className="max-w-[200px] truncate text-[11px] text-slate-500 dark:text-slate-400">
-                            {pos.name}
-                          </span>
                         </Link>
                       </td>
 

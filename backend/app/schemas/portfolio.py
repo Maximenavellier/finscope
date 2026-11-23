@@ -183,6 +183,7 @@ class PortfolioDonuts(BaseModel):
 class PortfolioWeightedStats(BaseModel):
     total_value_eur: float = 0.0
     total_cost_eur: float = 0.0
+    cash_eur: float = 0.0
     total_fees_eur: float = 0.0
     total_pnl_eur: float = 0.0
     total_pnl_pct: Optional[float] = None
@@ -463,3 +464,7 @@ class PortfolioRestoreResponse(BaseModel):
     sales_count: int = 0
     watchlist_count: int = 0
     settings_count: int = 0
+
+
+class PortfolioCashUpdate(BaseModel):
+    cash_eur: float = Field(0.0, ge=0.0)

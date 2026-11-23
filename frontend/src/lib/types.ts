@@ -515,6 +515,7 @@ export interface PortfolioDonuts {
 export interface PortfolioWeightedStats {
   total_value_eur: number;
   total_cost_eur: number;
+  cash_eur?: number;
   total_fees_eur?: number;
   total_pnl_eur: number;
   total_pnl_pct?: number | null;

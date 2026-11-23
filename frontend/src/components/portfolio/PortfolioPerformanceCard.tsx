@@ -161,8 +161,6 @@ export function PortfolioPerformanceCard({
             const pVal = isValidNumber(pt.portfolio_value) ? pt.portfolio_value : null;
             const iVal = isValidNumber(pt.invested_value) ? pt.invested_value : null;
             const gainEur = pVal !== null && iVal !== null ? pVal - iVal : null;
-            const gainOnTotalPct =
-              gainEur !== null && pVal !== null && pVal > 0 ? (gainEur / pVal) * 100 : null;
             const gainOnCostPct =
               gainEur !== null && iVal !== null && iVal > 0 ? (gainEur / iVal) * 100 : null;
 
@@ -183,12 +181,8 @@ export function PortfolioPerformanceCard({
                     gainEur,
                     chartCurrency
                   )}${
-                    gainOnTotalPct !== null
-                      ? ` (${formatPercent(gainOnTotalPct, { signed: true })} du total)`
-                      : ""
-                  }${
                     gainOnCostPct !== null
-                      ? ` · ${formatPercent(gainOnCostPct, { signed: true })} s/ investi`
+                      ? ` (${formatPercent(gainOnCostPct, { signed: true })})`
                       : ""
                   }</div>`
                 : "",
@@ -478,8 +472,8 @@ export function PortfolioPerformanceCard({
   const lastVal = lastPt && isValidNumber(lastPt.portfolio_value) ? lastPt.portfolio_value : null;
   const lastInv = lastPt && isValidNumber(lastPt.invested_value) ? lastPt.invested_value : null;
   const totalGain = lastVal !== null && lastInv !== null ? lastVal - lastInv : null;
-  const gainPctOfTotal =
-    totalGain !== null && lastVal !== null && lastVal > 0 ? (totalGain / lastVal) * 100 : null;
+  const gainPctOnCost =
+    totalGain !== null && lastInv !== null && lastInv > 0 ? (totalGain / lastInv) * 100 : null;
   const chartCur = data?.currency || displayCurrency;
 
   return (
@@ -523,12 +517,12 @@ export function PortfolioPerformanceCard({
                 <Badge
                   variant={totalGain >= 0 ? "emerald" : "coral"}
                   className="tabular-nums font-semibold"
-                  title="Montant des plus-values et part (% de plus-value) rapportée à la valeur totale actuelle du portefeuille"
+                  title="Montant des plus-values et rendement sur votre capital investi"
                 >
                   Plus-value : {totalGain > 0 ? "+" : ""}
                   {formatPrice(totalGain, chartCur)}
-                  {gainPctOfTotal !== null
-                    ? ` (${formatPercent(gainPctOfTotal, { signed: true })} du total)`
+                  {gainPctOnCost !== null
+                    ? ` (${formatPercent(gainPctOnCost, { signed: true })})`
                     : ""}
                 </Badge>
               </>

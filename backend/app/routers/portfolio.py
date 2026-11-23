@@ -10,6 +10,7 @@ from app.schemas.portfolio import (
     DcaSettings,
     OpportunityRadarResponse,
     PortfolioBackupPayload,
+    PortfolioCashUpdate,
     PortfolioDashboardResponse,
     PortfolioPerformanceResponse,
     PortfolioPositionCreate,
@@ -35,6 +36,14 @@ def get_portfolio_dashboard(
     db: Session = Depends(get_db),
 ):
     return portfolio_service.get_portfolio_dashboard(db, refresh=refresh)
+
+
+@router.put("/cash", response_model=PortfolioCashUpdate)
+def save_portfolio_cash(
+    body: PortfolioCashUpdate,
+    db: Session = Depends(get_db),
+):
+    return portfolio_service.save_portfolio_cash(db, body.cash_eur)
 
 
 @router.get("/performance", response_model=PortfolioPerformanceResponse)

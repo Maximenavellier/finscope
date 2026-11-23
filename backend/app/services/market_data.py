@@ -220,10 +220,39 @@ def infer_region_and_pea(
     return "US", False
 
 
+_KNOWN_BRAND_DOMAINS: tuple[tuple[str, str], ...] = (
+    ("amundi", "amundietf.fr"),
+    ("am. etf", "amundietf.fr"),
+    ("lyxor", "amundietf.fr"),
+    ("bnp paribas", "easy.bnpparibas.fr"),
+    ("ishares", "ishares.com"),
+    ("blackrock", "ishares.com"),
+    ("vanguard", "vanguard.com"),
+    ("invesco", "invesco.com"),
+    ("xtrackers", "etf.dws.com"),
+    ("spdr", "ssga.com"),
+    ("wisdomtree", "wisdomtree.eu"),
+    ("vaneck", "vaneck.com"),
+    ("nvidia", "nvidia.com"),
+    ("zscaler", "zscaler.com"),
+    ("eli lilly", "lilly.com"),
+    ("apple", "apple.com"),
+    ("microsoft", "microsoft.com"),
+    ("alphabet", "abc.xyz"),
+    ("amazon", "amazon.com"),
+    ("meta platforms", "meta.com"),
+    ("tesla", "tesla.com"),
+    ("lvmh", "lvmh.com"),
+    ("asml", "asml.com"),
+    ("totalenergies", "totalenergies.com"),
+)
+
+
 def build_logo_url(
     ticker: str,
     finnhub_logo: Optional[str] = None,
     website: Optional[str] = None,
+    name: Optional[str] = None,
 ) -> Optional[str]:
     if finnhub_logo and isinstance(finnhub_logo, str) and finnhub_logo.startswith(("http://", "https://")):
         return finnhub_logo
@@ -236,6 +265,10 @@ def build_logo_url(
         if domain.startswith("www."):
             domain = domain[4:]
         if domain:
+            return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    lower_name = (name or "").strip().lower()
+    for keyword, domain in _KNOWN_BRAND_DOMAINS:
+        if keyword in lower_name:
             return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
     return None
 
@@ -858,6 +891,21 @@ class MarketDataService:
             cached = cache_service.get(db, cache_key)
             if cached is not None:
                 payload = dict(cached.payload)
+                cur_name = str(payload.get("name") or "").strip()
+                if not cur_name or cur_name.upper() == sym:
+                    existing_asset = db.get(Asset, sym)
+                    if existing_asset and existing_asset.name and existing_asset.name.strip().upper() != sym:
+                        payload["name"] = existing_asset.name
+                    else:
+                        seed_item = get_seed_index().get(sym)
+                        if seed_item and seed_item.get("name"):
+                            payload["name"] = seed_item["name"]
+                if not payload.get("logo_url"):
+                    payload["logo_url"] = build_logo_url(
+                        sym,
+                        website=payload.get("website"),
+                        name=payload.get("name"),
+                    )
                 detected = detect_asset_type(payload.get("asset_type"), payload.get("name"), sym)
                 payload["asset_type"] = detected
                 if detected == "ETF":
@@ -951,13 +999,29 @@ class MarketDataService:
             # Optional Finnhub enrichment
             fh_logo = None
             fh_industry = None
+            fh_name = None
+            fh_weburl = None
             fh_profile = self._finnhub_get("/stock/profile2", {"symbol": sym})
             if isinstance(fh_profile, dict) and fh_profile:
                 fh_logo = fh_profile.get("logo")
                 fh_industry = fh_profile.get("finnhubIndustry")
+                fh_name = fh_profile.get("name")
+                fh_weburl = fh_profile.get("weburl")
 
-            website = info.get("website")
-            logo_url = build_logo_url(sym, finnhub_logo=fh_logo, website=website)
+            if not name or str(name).strip().upper() == sym:
+                if fh_name and str(fh_name).strip().upper() != sym:
+                    name = str(fh_name).strip()
+                else:
+                    existing_asset = db.get(Asset, sym)
+                    if existing_asset and existing_asset.name and existing_asset.name.strip().upper() != sym:
+                        name = existing_asset.name
+                    else:
+                        seed_item = get_seed_index().get(sym)
+                        if seed_item and seed_item.get("name"):
+                            name = seed_item["name"]
+
+            website = info.get("website") or fh_weburl
+            logo_url = build_logo_url(sym, finnhub_logo=fh_logo, website=website, name=name)
             country = info.get("country")
             exchange = info.get("exchange") or info.get("fullExchangeName")
             region, pea_eligible = infer_region_and_pea(sym, country, exchange, asset_type)
@@ -1085,7 +1149,12 @@ class MarketDataService:
             asset = Asset(ticker=sym)
             db.add(asset)
 
-        asset.name = (quote.get("name") or sym)[:255]
+        incoming_name = str(quote.get("name") or "").strip()
+        existing_name = str(asset.name or "").strip()
+        if incoming_name and incoming_name.upper() != sym.upper():
+            asset.name = incoming_name[:255]
+        elif not existing_name:
+            asset.name = sym[:255]
         asset.asset_type = quote.get("asset_type") or "EQUITY"
         asset.exchange = quote.get("exchange")
         asset.currency = quote.get("currency")
