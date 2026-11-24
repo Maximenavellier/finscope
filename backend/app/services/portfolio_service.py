@@ -111,7 +111,14 @@ def _enrich_single_ticker(
                 scores = score_equity(quote, funds, sector_averages=sec_avg)
                 fair_value = compute_default_fair_value(quote, funds)
                 red_flags = detect_red_flags(quote, funds)
-            persist_asset_scores(db, sym, scores)
+            new_score = safe_float((scores.get("global") or {}).get("score"))
+            asset_row = db.get(Asset, sym)
+            should_persist = refresh or asset_row is None or asset_row.score_global is None
+            if not should_persist and new_score is not None and asset_row is not None:
+                if abs(float(asset_row.score_global) - new_score) > 0.5:
+                    should_persist = True
+            if should_persist:
+                persist_asset_scores(db, sym, scores)
             return {
                 "quote": quote,
                 "prices": prices,

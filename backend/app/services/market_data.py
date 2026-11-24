@@ -6,7 +6,7 @@ from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from sqlalchemy import case, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
 from app.db.models import Asset
@@ -392,9 +393,45 @@ def extract_row_series(df: Optional[pd.DataFrame], candidate_names: list[str]) -
 _fmp_lock = threading.Lock()
 _fmp_blocked_until: Optional[datetime] = None
 
+_bg_lock = threading.Lock()
+_bg_inflight: set[str] = set()
+
 
 class MarketDataService:
     """Multi-source market data aggregator with DB-backed multi-TTL caching."""
+
+    def _schedule_bg_refresh(
+        self,
+        db: Session,
+        task_key: str,
+        worker_fn: Callable[[Session], None],
+    ) -> None:
+        """Run a background cache refresh in a daemon thread (skipped on StaticPool tests)."""
+        try:
+            bind = db.get_bind()
+        except Exception:
+            return
+        if bind is None or isinstance(getattr(bind, "pool", None), StaticPool):
+            return
+
+        with _bg_lock:
+            if task_key in _bg_inflight:
+                return
+            _bg_inflight.add(task_key)
+
+        session_factory = sessionmaker(autocommit=False, autoflush=False, bind=bind)
+
+        def _run() -> None:
+            try:
+                with session_factory() as bg_db:
+                    worker_fn(bg_db)
+            except Exception as exc:
+                logger.debug("Background SWR refresh failed for %s: %s", task_key, exc)
+            finally:
+                with _bg_lock:
+                    _bg_inflight.discard(task_key)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def is_fmp_rate_limited(self) -> bool:
         global _fmp_blocked_until
@@ -579,6 +616,17 @@ class MarketDataService:
                 payload = dict(cached.payload)
                 payload["updated_at"] = cached.updated_at.isoformat()
                 payload["is_stale"] = cached.is_stale
+                return payload
+            stale = cache_service.get(db, cache_key, allow_stale=True)
+            if stale is not None and stale.age_seconds <= 86400:
+                payload = dict(stale.payload)
+                payload["updated_at"] = stale.updated_at.isoformat()
+                payload["is_stale"] = True
+                self._schedule_bg_refresh(
+                    db,
+                    cache_key,
+                    lambda bg_db: self.get_eurusd_rate(bg_db, refresh=True),
+                )
                 return payload
 
         rate: Optional[float] = None
@@ -1181,6 +1229,17 @@ class MarketDataService:
                 payload["updated_at"] = cached.updated_at.isoformat()
                 payload["is_stale"] = cached.is_stale
                 return payload
+            stale = cache_service.get(db, cache_key, allow_stale=True)
+            if stale is not None and stale.age_seconds <= 86400:
+                payload = self._repair_cached_quote_payload(db, sym, dict(stale.payload), persist=False)
+                payload["updated_at"] = stale.updated_at.isoformat()
+                payload["is_stale"] = True
+                self._schedule_bg_refresh(
+                    db,
+                    cache_key,
+                    lambda bg_db, _sym=sym: self.get_quote_and_info(bg_db, _sym, refresh=True),
+                )
+                return payload
 
         try:
             tk = yf.Ticker(sym)
@@ -1464,6 +1523,17 @@ class MarketDataService:
                 raw_payload = cached.payload
                 updated_at = cached.updated_at
                 is_stale = cached.is_stale
+            else:
+                stale = cache_service.get(db, cache_key, allow_stale=True)
+                if stale is not None and stale.age_seconds <= 7 * 86400:
+                    raw_payload = stale.payload
+                    updated_at = stale.updated_at
+                    is_stale = True
+                    self._schedule_bg_refresh(
+                        db,
+                        cache_key,
+                        lambda bg_db, _sym=sym: self.get_price_history(bg_db, _sym, period="MAX", refresh=True),
+                    )
 
         if raw_payload is None:
             try:

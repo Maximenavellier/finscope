@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Briefcase, Plus, RefreshCw, Star, TrendingUp } from "lucide-react";
 import { useDisplayCurrency } from "@/components/layout/CurrencyProvider";
@@ -70,17 +70,38 @@ export function PortfolioClient() {
   const [wlModalOpen, setWlModalOpen] = useState(false);
   const [editingWatchlist, setEditingWatchlist] = useState<WatchlistItemEnriched | null>(null);
 
-  const loadData = useCallback(async (forceRefresh = false) => {
-    if (forceRefresh) setRefreshing(true);
-    else setLoading(true);
+  const SNAPSHOT_KEY = "finscope_portfolio_snapshot_v1";
+  const hasPortfolioRef = useRef(false);
+
+  const loadData = useCallback(async (forceRefresh = false, background = false) => {
+    if (forceRefresh) {
+      setRefreshing(true);
+    } else if (!background && !hasPortfolioRef.current) {
+      setLoading(true);
+    }
     try {
-      const [pRes, wRes] = await Promise.all([
-        getPortfolio(forceRefresh),
-        getWatchlist(forceRefresh),
-      ]);
-      setPortfolio(pRes);
-      setWatchlist(wRes);
-      setPerfRefreshKey((k) => k + 1);
+      const portfolioPromise = getPortfolio(forceRefresh).then((pRes) => {
+        hasPortfolioRef.current = true;
+        setPortfolio(pRes);
+        setLoading(false);
+        setPerfRefreshKey((k) => k + 1);
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(pRes));
+          } catch {
+            // ignore storage errors
+          }
+        }
+        return pRes;
+      });
+      const watchlistPromise = getWatchlist(forceRefresh)
+        .then((wRes) => {
+          setWatchlist(wRes);
+        })
+        .catch(() => {
+          // watchlist fetch failure should not block portfolio view
+        });
+      await Promise.all([portfolioPromise, watchlistPromise]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -88,7 +109,24 @@ export function PortfolioClient() {
   }, []);
 
   useEffect(() => {
-    loadData(false);
+    let hasSnapshot = false;
+    if (typeof window !== "undefined") {
+      try {
+        const rawSnap = window.localStorage.getItem(SNAPSHOT_KEY);
+        if (rawSnap) {
+          const parsed = JSON.parse(rawSnap) as PortfolioDashboardResponse;
+          if (parsed && Array.isArray(parsed.positions) && parsed.stats) {
+            hasPortfolioRef.current = true;
+            setPortfolio(parsed);
+            setLoading(false);
+            hasSnapshot = true;
+          }
+        }
+      } catch {
+        // ignore corrupted snapshot
+      }
+    }
+    loadData(false, hasSnapshot);
   }, [loadData]);
 
   const positionsCount = portfolio?.positions.length ?? 0;

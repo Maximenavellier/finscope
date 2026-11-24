@@ -105,7 +105,49 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function executeFetch<T>(path: string, init?: RequestInit, allowRetry = true): Promise<T> {
+const memoryGetCache = new Map<string, { data: unknown; ts: number }>();
+const inFlightGets = new Map<string, Promise<unknown>>();
+
+export function clearApiCache(prefix?: string) {
+  if (!prefix) {
+    memoryGetCache.clear();
+    return;
+  }
+  for (const key of Array.from(memoryGetCache.keys())) {
+    if (key.startsWith(prefix)) {
+      memoryGetCache.delete(key);
+    }
+  }
+}
+
+function resolveGetCacheTtl(path: string): number {
+  if (
+    path.includes("refresh=true") ||
+    path.startsWith("/api/auth/") ||
+    path.startsWith("/api/screener/seed/status") ||
+    path.startsWith("/api/portfolio/backup")
+  ) {
+    return 0;
+  }
+  if (
+    path.startsWith("/api/portfolio") ||
+    path.startsWith("/api/watchlist") ||
+    path.startsWith("/api/fx") ||
+    path.startsWith("/api/system/status")
+  ) {
+    return 60_000;
+  }
+  if (
+    path.startsWith("/api/stocks/") ||
+    path.startsWith("/api/screener") ||
+    path.startsWith("/api/compare")
+  ) {
+    return 300_000;
+  }
+  return 0;
+}
+
+async function rawExecuteFetch<T>(path: string, init?: RequestInit, allowRetry = true): Promise<T> {
   const url = `${API_BASE}${path}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -136,7 +178,7 @@ async function executeFetch<T>(path: string, init?: RequestInit, allowRetry = tr
 
     if ([502, 503, 504].includes(res.status) && allowRetry) {
       await sleep(RETRY_DELAY_MS);
-      return executeFetch<T>(path, init, false);
+      return rawExecuteFetch<T>(path, init, false);
     }
 
     if (!res.ok) {
@@ -161,7 +203,7 @@ async function executeFetch<T>(path: string, init?: RequestInit, allowRetry = tr
     const isNetwork = err instanceof TypeError;
     if ((isNetwork || isAbort) && allowRetry) {
       await sleep(RETRY_DELAY_MS);
-      return executeFetch<T>(path, init, false);
+      return rawExecuteFetch<T>(path, init, false);
     }
     if (isAbort) {
       throw new Error("Le serveur met trop de temps à répondre (démarrage à froid en cours). Réessayez dans un instant.");
@@ -178,6 +220,70 @@ async function executeFetch<T>(path: string, init?: RequestInit, allowRetry = tr
       notifyWakeup();
     }
   }
+}
+
+async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method || "GET").toUpperCase();
+
+  if (method !== "GET") {
+    const data = await rawExecuteFetch<T>(path, init);
+    clearApiCache();
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem("finscope_portfolio_snapshot_v1");
+      } catch {
+        // ignore storage errors
+      }
+    }
+    return data;
+  }
+
+  if (path.includes("refresh=true")) {
+    const base = path.split("?")[0];
+    clearApiCache(base);
+    if (base.startsWith("/api/portfolio")) {
+      clearApiCache("/api/portfolio");
+    } else if (base.startsWith("/api/stocks/")) {
+      const parts = base.split("/");
+      if (parts.length >= 4) {
+        clearApiCache(`/api/stocks/${parts[3]}`);
+      }
+      clearApiCache("/api/portfolio");
+    }
+    const freshData = await rawExecuteFetch<T>(path, init);
+    const normalizedPath = path.replace("refresh=true", "refresh=false");
+    const normTtl = resolveGetCacheTtl(normalizedPath);
+    if (normTtl > 0) {
+      memoryGetCache.set(normalizedPath, { data: freshData, ts: Date.now() });
+    }
+    return freshData;
+  }
+
+  const ttl = resolveGetCacheTtl(path);
+  if (ttl > 0) {
+    const cached = memoryGetCache.get(path);
+    if (cached && Date.now() - cached.ts < ttl) {
+      return cached.data as T;
+    }
+    const inflight = inFlightGets.get(path);
+    if (inflight) {
+      return inflight as Promise<T>;
+    }
+
+    const reqPromise = rawExecuteFetch<T>(path, init)
+      .then((data) => {
+        memoryGetCache.set(path, { data, ts: Date.now() });
+        return data;
+      })
+      .finally(() => {
+        inFlightGets.delete(path);
+      });
+
+    inFlightGets.set(path, reqPromise);
+    return reqPromise;
+  }
+
+  return rawExecuteFetch<T>(path, init);
 }
 
 export async function searchAssets(query: string, limit = 12): Promise<SearchResponse> {
