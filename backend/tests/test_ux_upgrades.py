@@ -561,3 +561,107 @@ def test_finnhub_realtime_quote_live_today_chart_and_response_cache(client, db_s
     dash2 = client.get("/api/portfolio").json()
     assert dash2["stats"]["cash_eur"] == 70.0
     assert dash2["stats"]["total_value_eur"] == pytest.approx(400.0, abs=0.2)
+
+
+def test_finnhub_forward_pe_screener_and_radar_52w_high_fallback(client, db_session, monkeypatch):
+    from app.services.cache_service import cache_service
+    from app.services.market_data import market_data_service
+
+    dts = pd.date_range(end="2026-11-24", periods=30, freq="B")
+    closes = [180.0] * 10 + [200.0] * 10 + [160.0] * 10  # recent 52W peak = 200.0, current = 160.0 (-20%)
+    hist_df = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes,
+            "Low": closes,
+            "Close": closes,
+            "Volume": [1_000_000] * len(closes),
+            "Stock Splits": [0.0] * len(closes),
+        },
+        index=dts,
+    )
+    empty_info_tk = SimpleNamespace(
+        info={},
+        fast_info=SimpleNamespace(last_price=160.0, previous_close=160.0, currency="USD"),
+        history=lambda **kwargs: hist_df,
+        quarterly_financials=pd.DataFrame(),
+        financials=_mock_income_stmt(),
+        quarterly_income_stmt=pd.DataFrame(),
+        income_stmt=_mock_income_stmt(),
+        quarterly_balance_sheet=pd.DataFrame(),
+        balance_sheet=_mock_balance_sheet(),
+        quarterly_cashflow=pd.DataFrame(),
+        cashflow=_mock_cashflow(),
+        dividends=pd.Series(dtype=float),
+        earnings_history=None,
+        recommendations_summary=None,
+        news=[],
+    )
+    tk_fx = SimpleNamespace(
+        fast_info=SimpleNamespace(last_price=1.0),
+        history=lambda **kwargs: pd.DataFrame({"Close": [1.0]}),
+    )
+    monkeypatch.setattr(
+        "app.services.market_data.yf.Ticker",
+        lambda sym: tk_fx if sym == "EURUSD=X" else empty_info_tk,
+    )
+
+    def _mock_finnhub(self, path, params=None):
+        if path == "/stock/metric" and (params or {}).get("symbol") == "NVDA":
+            return {
+                "metric": {
+                    "forwardPE": 19.5,
+                    "peTTM": 28.0,
+                    "52WeekHigh": 200.0,
+                    "52WeekLow": 120.0,
+                }
+            }
+        return None
+
+    monkeypatch.setattr("app.services.market_data.MarketDataService._finnhub_get", _mock_finnhub)
+
+    # 1) Rate-limited Yahoo (tk.info == {}) fills forward_pe, pe, fifty_two_week_high via Finnhub + hist_1y
+    q = market_data_service.get_quote_and_info(db_session, "NVDA", refresh=True)
+    assert q["forward_pe"] == 19.5
+    assert q["pe"] == 28.0
+    assert q["fifty_two_week_high"] == 200.0
+
+    # Screener shows persisted forward_pe
+    scr = client.get("/api/screener?q=NVDA&limit=10").json()
+    nvda_rows = [it for it in scr["items"] if it["ticker"] == "NVDA"]
+    assert len(nvda_rows) == 1
+    assert nvda_rows[0]["forward_pe"] == 19.5
+
+    # Subsequent refresh WITHOUT Finnhub must NOT wipe Asset.forward_pe to None
+    monkeypatch.setattr("app.services.market_data.MarketDataService._finnhub_get", lambda self, *a, **kw: None)
+    market_data_service.get_quote_and_info(db_session, "NVDA", refresh=True)
+    scr2 = client.get("/api/screener?q=NVDA&limit=10").json()
+    assert [it for it in scr2["items"] if it["ticker"] == "NVDA"][0]["forward_pe"] == 19.5
+
+    # 2) Opportunity radar computes distance_52w_high_pct from prices history even if quote.fifty_two_week_high is None
+    res_add = client.post(
+        "/api/portfolio/positions",
+        json={"ticker": "PUST.PA", "envelope": "PEA", "quantity": 2.0, "pru": 150.0, "currency": "EUR"},
+    )
+    assert res_add.status_code == 201
+    # Force cached quote to have fifty_two_week_high=None (as if from rate-limited ETF)
+    cache_service.set(
+        db_session,
+        "quote:PUST.PA",
+        "quote",
+        {
+            "ticker": "PUST.PA",
+            "name": "Amundi PEA Nasdaq-100 UCITS ETF Acc",
+            "asset_type": "ETF",
+            "currency": "EUR",
+            "region": "EU",
+            "pea_eligible": True,
+            "price": 160.0,
+            "fifty_two_week_high": None,
+        },
+    )
+    radar = client.get("/api/portfolio/radar").json()
+    pust_items = [it for it in radar["items"] if it["ticker"] == "PUST.PA"]
+    assert len(pust_items) == 1
+    # 160 vs peak 200 => -20.0%
+    assert pust_items[0]["distance_52w_high_pct"] == pytest.approx(-20.0, abs=0.2)

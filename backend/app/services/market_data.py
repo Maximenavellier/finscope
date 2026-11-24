@@ -1110,6 +1110,66 @@ class MarketDataService:
         future_dates = sorted(d for d in candidates if d >= today)
         return future_dates[0].isoformat() if future_dates else None
 
+    def _compute_52w_from_prices_payload(
+        self, db: Session, sym: str
+    ) -> tuple[Optional[float], Optional[float]]:
+        cached_px = cache_service.get(db, f"prices:{sym}:MAX", allow_stale=True)
+        if cached_px is None or not isinstance(cached_px.payload, dict):
+            return None, None
+        pts = cached_px.payload.get("points") or []
+        if not pts:
+            return None, None
+        cutoff = (utc_now().date() - timedelta(days=365)).isoformat()
+        highs: list[float] = []
+        lows: list[float] = []
+        for pt in pts:
+            dt = str(pt.get("date") or "")[:10]
+            if dt and dt < cutoff:
+                continue
+            hi = safe_float(pt.get("high")) or safe_float(pt.get("close"))
+            lo = safe_float(pt.get("low")) or safe_float(pt.get("close"))
+            if hi is not None and hi > 0:
+                highs.append(hi)
+            if lo is not None and lo > 0:
+                lows.append(lo)
+        return (round(max(highs), 4) if highs else None), (round(min(lows), 4) if lows else None)
+
+    def _compute_forward_pe_from_analysts_cache(
+        self, db: Session, sym: str, price: Optional[float]
+    ) -> Optional[float]:
+        if price is None or price <= 0:
+            return None
+        cached_an = cache_service.get(db, f"analysts:{sym}", allow_stale=True)
+        if cached_an is None or not isinstance(cached_an.payload, dict):
+            return None
+        future_eps = [
+            safe_float(item.get("avg"))
+            for item in (cached_an.payload.get("eps_forecasts") or [])
+            if not item.get("is_actual")
+        ]
+        future_eps = [v for v in future_eps if v is not None and v > 0]
+        if not future_eps:
+            return None
+        target_eps = future_eps[1] if len(future_eps) >= 2 else future_eps[0]
+        return round(price / target_eps, 2)
+
+    @staticmethod
+    def _extract_finnhub_metric_fallbacks(metric: dict[str, Any]) -> dict[str, Optional[float]]:
+        def _pct_to_dec(val: Any) -> Optional[float]:
+            v = safe_float(val)
+            return round(v / 100.0, 6) if v is not None else None
+
+        return {
+            "pe": safe_float(metric.get("peTTM")) or safe_float(metric.get("peExclExtraTTM")),
+            "forward_pe": safe_float(metric.get("forwardPE")),
+            "fifty_two_week_high": safe_float(metric.get("52WeekHigh")),
+            "fifty_two_week_low": safe_float(metric.get("52WeekLow")),
+            "gross_margin": _pct_to_dec(metric.get("grossMarginTTM")),
+            "op_margin": _pct_to_dec(metric.get("operatingMarginTTM")),
+            "net_margin": _pct_to_dec(metric.get("netProfitMarginTTM")),
+            "roe": _pct_to_dec(metric.get("roeTTM")),
+        }
+
     def _repair_cached_quote_payload(self, db: Session, sym: str, payload: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
         repaired = False
         cur_name = str(payload.get("name") or "").strip()
@@ -1176,6 +1236,51 @@ class MarketDataService:
                 payload["next_earnings_date"] = None
             payload["days_until_earnings"] = days
 
+            if payload.get("pe") is None or payload.get("forward_pe") is None:
+                existing_asset = db.get(Asset, sym)
+                if existing_asset is not None:
+                    if payload.get("pe") is None and existing_asset.pe is not None:
+                        payload["pe"] = existing_asset.pe
+                        repaired = True
+                    if payload.get("forward_pe") is None and existing_asset.forward_pe is not None:
+                        payload["forward_pe"] = existing_asset.forward_pe
+                        repaired = True
+
+            if payload.get("forward_pe") is None:
+                est_fpe = self._compute_forward_pe_from_analysts_cache(
+                    db, sym, safe_float(payload.get("price"))
+                )
+                if est_fpe is not None:
+                    payload["forward_pe"] = est_fpe
+                    repaired = True
+
+        if payload.get("fifty_two_week_high") is None or payload.get("fifty_two_week_low") is None:
+            px_h52, px_l52 = self._compute_52w_from_prices_payload(db, sym)
+            if payload.get("fifty_two_week_high") is None and px_h52 is not None:
+                payload["fifty_two_week_high"] = px_h52
+                repaired = True
+            if payload.get("fifty_two_week_low") is None and px_l52 is not None:
+                payload["fifty_two_week_low"] = px_l52
+                repaired = True
+
+        if (
+            persist
+            and detected != "ETF"
+            and (
+                payload.get("forward_pe") is None
+                or payload.get("pe") is None
+                or payload.get("fifty_two_week_high") is None
+            )
+        ):
+            fh_m = self._finnhub_get("/stock/metric", {"symbol": sym, "metric": "all"})
+            metric = (fh_m or {}).get("metric") if isinstance(fh_m, dict) else None
+            if isinstance(metric, dict) and metric:
+                fb = self._extract_finnhub_metric_fallbacks(metric)
+                for k, v in fb.items():
+                    if payload.get(k) is None and v is not None:
+                        payload[k] = v
+                        repaired = True
+
         if payload.get("fx_to_eur_rate") is None or payload.get("price_eur") is None:
             fx_eur, px_eur = self._compute_eur_estimate_fields(
                 db, payload.get("currency"), safe_float(payload.get("price"))
@@ -1213,6 +1318,10 @@ class MarketDataService:
                     if bool(asset.pea_eligible) != bool(payload.get("pea_eligible", False)):
                         asset.pea_eligible = bool(payload.get("pea_eligible", False))
                         changed_asset = True
+                    for col in ("pe", "forward_pe", "gross_margin", "op_margin", "net_margin", "roe"):
+                        if getattr(asset, col) is None and payload.get(col) is not None:
+                            setattr(asset, col, payload[col])
+                            changed_asset = True
                     if changed_asset:
                         db.commit()
             except Exception:
@@ -1252,12 +1361,16 @@ class MarketDataService:
             fast_prev_close = None
             fast_mcap = None
             fast_currency = None
+            fast_year_high = None
+            fast_year_low = None
             try:
                 fi = tk.fast_info
                 fast_price = safe_float(getattr(fi, "last_price", None))
                 fast_prev_close = safe_float(getattr(fi, "previous_close", None))
                 fast_mcap = safe_float(getattr(fi, "market_cap", None))
                 fast_currency = getattr(fi, "currency", None)
+                fast_year_high = safe_float(getattr(fi, "year_high", None))
+                fast_year_low = safe_float(getattr(fi, "year_low", None))
             except Exception:
                 pass
 
@@ -1391,6 +1504,55 @@ class MarketDataService:
             days_until_earnings = self._compute_days_until_earnings(next_earnings_date)
             fx_to_eur_rate, price_eur = self._compute_eur_estimate_fields(db, currency, price)
 
+            pe_val = safe_float(info.get("trailingPE"))
+            forward_pe_val = safe_float(info.get("forwardPE"))
+            high_52w_val = safe_float(info.get("fiftyTwoWeekHigh")) or fast_year_high
+            low_52w_val = safe_float(info.get("fiftyTwoWeekLow")) or fast_year_low
+            gross_margin_val = safe_float(info.get("grossMargins"))
+            op_margin_val = safe_float(info.get("operatingMargins"))
+            net_margin_val = safe_float(info.get("profitMargins"))
+            roe_val = safe_float(info.get("returnOnEquity"))
+
+            if (high_52w_val is None or low_52w_val is None) and hist_1y is not None and not hist_1y.empty:
+                h_col = "High" if "High" in hist_1y.columns else ("Close" if "Close" in hist_1y.columns else None)
+                l_col = "Low" if "Low" in hist_1y.columns else ("Close" if "Close" in hist_1y.columns else None)
+                if h_col and high_52w_val is None:
+                    s_h = hist_1y[h_col].dropna()
+                    if not s_h.empty:
+                        high_52w_val = round(float(s_h.max()), 4)
+                if l_col and low_52w_val is None:
+                    s_l = hist_1y[l_col].dropna()
+                    if not s_l.empty:
+                        low_52w_val = round(float(s_l.min()), 4)
+
+            if high_52w_val is None or low_52w_val is None:
+                px_h52, px_l52 = self._compute_52w_from_prices_payload(db, sym)
+                high_52w_val = high_52w_val or px_h52
+                low_52w_val = low_52w_val or px_l52
+
+            if asset_type != "ETF" and (
+                forward_pe_val is None or pe_val is None or high_52w_val is None or roe_val is None
+            ):
+                fh_m = self._finnhub_get("/stock/metric", {"symbol": sym, "metric": "all"})
+                metric = (fh_m or {}).get("metric") if isinstance(fh_m, dict) else None
+                if isinstance(metric, dict) and metric:
+                    fb = self._extract_finnhub_metric_fallbacks(metric)
+                    pe_val = pe_val or fb["pe"]
+                    forward_pe_val = forward_pe_val or fb["forward_pe"]
+                    high_52w_val = high_52w_val or fb["fifty_two_week_high"]
+                    low_52w_val = low_52w_val or fb["fifty_two_week_low"]
+                    if gross_margin_val is None:
+                        gross_margin_val = fb["gross_margin"]
+                    if op_margin_val is None:
+                        op_margin_val = fb["op_margin"]
+                    if net_margin_val is None:
+                        net_margin_val = fb["net_margin"]
+                    if roe_val is None:
+                        roe_val = fb["roe"]
+
+            if asset_type != "ETF" and forward_pe_val is None:
+                forward_pe_val = self._compute_forward_pe_from_analysts_cache(db, sym, price)
+
             payload: dict[str, Any] = {
                 "ticker": sym,
                 "name": name or sym,
@@ -1413,8 +1575,8 @@ class MarketDataService:
                 "market_cap": safe_float(info.get("marketCap")) or fast_mcap,
                 "enterprise_value": safe_float(info.get("enterpriseValue")),
                 "shares_outstanding": safe_float(info.get("sharesOutstanding")),
-                "pe": safe_float(info.get("trailingPE")),
-                "forward_pe": safe_float(info.get("forwardPE")),
+                "pe": pe_val,
+                "forward_pe": forward_pe_val,
                 "peg": safe_float(info.get("pegRatio")) or safe_float(info.get("trailingPegRatio")),
                 "price_to_book": safe_float(info.get("priceToBook")),
                 "ev_to_ebitda": safe_float(info.get("enterpriseToEbitda")),
@@ -1422,15 +1584,15 @@ class MarketDataService:
                 "dividend_rate": dividend_rate,
                 "ex_dividend_date": ex_dividend_date,
                 "beta": safe_float(info.get("beta")),
-                "fifty_two_week_high": safe_float(info.get("fiftyTwoWeekHigh")),
-                "fifty_two_week_low": safe_float(info.get("fiftyTwoWeekLow")),
+                "fifty_two_week_high": high_52w_val,
+                "fifty_two_week_low": low_52w_val,
                 "analyst_target_price": safe_float(info.get("targetMeanPrice")),
                 "recommendation_key": info.get("recommendationKey"),
                 # Snapshot ratios from Yahoo info (complemented by fundamentals)
-                "gross_margin": safe_float(info.get("grossMargins")),
-                "op_margin": safe_float(info.get("operatingMargins")),
-                "net_margin": safe_float(info.get("profitMargins")),
-                "roe": safe_float(info.get("returnOnEquity")),
+                "gross_margin": gross_margin_val,
+                "op_margin": op_margin_val,
+                "net_margin": net_margin_val,
+                "roe": roe_val,
                 "roa": safe_float(info.get("returnOnAssets")),
                 "revenue_growth_info": safe_float(info.get("revenueGrowth")),
                 "earnings_growth_info": safe_float(info.get("earningsGrowth")),
@@ -1505,11 +1667,16 @@ class MarketDataService:
             asset.industry = str(quote["industry"])[:128]
         if quote.get("logo_url"):
             asset.logo_url = quote["logo_url"]
-        asset.market_cap = quote.get("market_cap")
-        asset.price = quote.get("price")
-        asset.pe = quote.get("pe")
-        asset.forward_pe = quote.get("forward_pe")
-        asset.peg = quote.get("peg")
+        if quote.get("market_cap") is not None:
+            asset.market_cap = quote["market_cap"]
+        if quote.get("price") is not None:
+            asset.price = quote["price"]
+        if quote.get("pe") is not None:
+            asset.pe = quote["pe"]
+        if quote.get("forward_pe") is not None:
+            asset.forward_pe = quote["forward_pe"]
+        if quote.get("peg") is not None:
+            asset.peg = quote["peg"]
         if quote.get("gross_margin") is not None:
             asset.gross_margin = quote["gross_margin"]
         if quote.get("op_margin") is not None:

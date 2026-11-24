@@ -1947,6 +1947,17 @@ class PortfolioService:
                 price_vs_fv_pct = round(-mos_pct, 1)
 
             high_52w = safe_float(quote.get("fifty_two_week_high"))
+            if (high_52w is None or high_52w <= 0) and isinstance(bundle.get("prices"), dict):
+                cutoff_52w = (utc_now().date() - timedelta(days=365)).isoformat()
+                high_vals = [
+                    safe_float(pt.get("high")) or safe_float(pt.get("close"))
+                    for pt in (bundle["prices"].get("points") or [])
+                    if str(pt.get("date") or "")[:10] >= cutoff_52w
+                ]
+                valid_highs = [v for v in high_vals if v is not None and v > 0]
+                if valid_highs:
+                    high_52w = max(valid_highs)
+
             dist_52w = (
                 round(((price - high_52w) / high_52w) * 100.0, 1)
                 if (price is not None and high_52w is not None and high_52w > 0)
