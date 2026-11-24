@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Calculator, Coins, Loader2, Sparkles, Wallet } from "lucide-react";
 import { InfoTooltip } from "@/components/stock/InfoTooltip";
@@ -27,6 +27,7 @@ export function DcaAssistantCard({ refreshSignal = 0 }: DcaAssistantCardProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const lastRefreshSignalRef = useRef(refreshSignal);
 
   const computePlan = useCallback(
     async (amt: number, etfPct: number, nextMode: "standard" | "opportunistic", persist: boolean) => {
@@ -95,10 +96,11 @@ export function DcaAssistantCard({ refreshSignal = 0 }: DcaAssistantCardProps) {
 
   // Refresh plan automatically if portfolio/watchlist data changes
   useEffect(() => {
-    if (!initialized || refreshSignal === 0) return;
+    if (!initialized || refreshSignal === lastRefreshSignalRef.current) return;
+    lastRefreshSignalRef.current = refreshSignal;
     computePlan(amountEur, etfTargetPct, mode, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshSignal]);
+  }, [refreshSignal, initialized]);
 
   const handleCompute = async (
     nextAmt = amountEur,

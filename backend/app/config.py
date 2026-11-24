@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     APP_PIN: str = ""
     FRONTEND_URL: str = ""
     CORS_ORIGINS: str = "http://localhost:3000"
-    CACHE_TTL_QUOTE_MINUTES: int = 30
+    CACHE_TTL_QUOTE_MINUTES: int = 5
     CACHE_TTL_FUNDAMENTALS_HOURS: int = 24
     PEER_FETCH_CONCURRENCY: int = 3
 

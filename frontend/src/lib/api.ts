@@ -107,10 +107,24 @@ async function sleep(ms: number) {
 
 const memoryGetCache = new Map<string, { data: unknown; ts: number }>();
 const inFlightGets = new Map<string, Promise<unknown>>();
+const SS_PREFIX = "finscope_ss_";
+const SS_TTL_MS = 120_000;
 
 export function clearApiCache(prefix?: string) {
   if (!prefix) {
     memoryGetCache.clear();
+    if (typeof window !== "undefined") {
+      try {
+        for (let i = window.sessionStorage.length - 1; i >= 0; i--) {
+          const k = window.sessionStorage.key(i);
+          if (k && k.startsWith(SS_PREFIX)) {
+            window.sessionStorage.removeItem(k);
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+    }
     return;
   }
   for (const key of Array.from(memoryGetCache.keys())) {
@@ -118,6 +132,70 @@ export function clearApiCache(prefix?: string) {
       memoryGetCache.delete(key);
     }
   }
+  if (typeof window !== "undefined") {
+    try {
+      for (let i = window.sessionStorage.length - 1; i >= 0; i--) {
+        const k = window.sessionStorage.key(i);
+        if (k && k.startsWith(SS_PREFIX + prefix)) {
+          window.sessionStorage.removeItem(k);
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+function isSessionPersistedPath(path: string): boolean {
+  const clean = path.split("?")[0];
+  return (
+    clean === "/api/screener" ||
+    /^\/api\/stocks\/[^/]+\/overview$/.test(clean)
+  );
+}
+
+function readSessionCache<T>(path: string): T | null {
+  if (typeof window === "undefined" || !isSessionPersistedPath(path)) return null;
+  try {
+    const raw = window.sessionStorage.getItem(SS_PREFIX + path);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { data: T; ts: number };
+    if (parsed && Date.now() - parsed.ts < SS_TTL_MS) {
+      return parsed.data;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function writeSessionCache(path: string, data: unknown) {
+  if (typeof window === "undefined" || !isSessionPersistedPath(path)) return;
+  try {
+    window.sessionStorage.setItem(
+      SS_PREFIX + path,
+      JSON.stringify({ data, ts: Date.now() })
+    );
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function isReadOnlyPost(path: string, init?: RequestInit): boolean {
+  const clean = path.split("?")[0];
+  if (clean === "/api/portfolio/projections") return true;
+  if (/^\/api\/stocks\/[^/]+\/fair-value$/.test(clean)) return true;
+  if (clean === "/api/portfolio/dca/plan") {
+    try {
+      if (typeof init?.body === "string") {
+        const parsed = JSON.parse(init.body) as { save_settings?: boolean };
+        return !parsed?.save_settings;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function resolveGetCacheTtl(path: string): number {
@@ -227,12 +305,14 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (method !== "GET") {
     const data = await rawExecuteFetch<T>(path, init);
-    clearApiCache();
-    if (typeof window !== "undefined") {
-      try {
-        window.localStorage.removeItem("finscope_portfolio_snapshot_v1");
-      } catch {
-        // ignore storage errors
+    if (!isReadOnlyPost(path, init)) {
+      clearApiCache();
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.removeItem("finscope_portfolio_snapshot_v1");
+        } catch {
+          // ignore storage errors
+        }
       }
     }
     return data;
@@ -255,6 +335,7 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const normTtl = resolveGetCacheTtl(normalizedPath);
     if (normTtl > 0) {
       memoryGetCache.set(normalizedPath, { data: freshData, ts: Date.now() });
+      writeSessionCache(normalizedPath, freshData);
     }
     return freshData;
   }
@@ -265,6 +346,11 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     if (cached && Date.now() - cached.ts < ttl) {
       return cached.data as T;
     }
+    const ssHit = readSessionCache<T>(path);
+    if (ssHit !== null) {
+      memoryGetCache.set(path, { data: ssHit, ts: Date.now() });
+      return ssHit;
+    }
     const inflight = inFlightGets.get(path);
     if (inflight) {
       return inflight as Promise<T>;
@@ -273,6 +359,7 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const reqPromise = rawExecuteFetch<T>(path, init)
       .then((data) => {
         memoryGetCache.set(path, { data, ts: Date.now() });
+        writeSessionCache(path, data);
         return data;
       })
       .finally(() => {

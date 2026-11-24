@@ -453,3 +453,111 @@ def test_sector_country_repair_and_etf_lookthrough_geography(client, db_session,
     assert geo["États-Unis"] > 60.0
     assert geo["Asie & Émergents"] > 20.0
     assert "Europe" in geo
+
+
+def test_finnhub_realtime_quote_live_today_chart_and_response_cache(client, db_session, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.services.market_data import market_data_service
+
+    fixed_tuesday = datetime(2026, 11, 24, 15, 30, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.services.portfolio_service.utc_now", lambda: fixed_tuesday)
+
+    # Historical daily candles end yesterday (Monday 2026-11-23) with delayed close 150.0
+    dts = pd.date_range(start="2026-10-01", end="2026-11-23", freq="B")
+    nvda_closes = [140.0] * (len(dts) - 1) + [150.0]
+    bench_closes = [5000.0 + i for i in range(len(dts))]
+
+    def _df(vals: list[float]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "Open": vals,
+                "High": vals,
+                "Low": vals,
+                "Close": vals,
+                "Volume": [1_000_000] * len(vals),
+                "Stock Splits": [0.0] * len(vals),
+            },
+            index=dts,
+        )
+
+    tk_nvda = SimpleNamespace(
+        info={
+            "longName": "NVIDIA Corporation",
+            "quoteType": "EQUITY",
+            "currency": "USD",
+            "currentPrice": 151.0,  # delayed Yahoo price
+            "previousClose": 150.0,
+            "sector": "Technology",
+            "sharesOutstanding": 100.0,
+            "marketCap": 15100.0,
+        },
+        fast_info=SimpleNamespace(last_price=151.0, previous_close=150.0, currency="USD"),
+        history=lambda **kwargs: _df(nvda_closes),
+        quarterly_financials=pd.DataFrame(),
+        financials=pd.DataFrame(),
+        quarterly_income_stmt=pd.DataFrame(),
+        income_stmt=pd.DataFrame(),
+        quarterly_balance_sheet=pd.DataFrame(),
+        balance_sheet=pd.DataFrame(),
+        quarterly_cashflow=pd.DataFrame(),
+        cashflow=pd.DataFrame(),
+        dividends=pd.Series(dtype=float),
+        earnings_history=None,
+        recommendations_summary=None,
+        news=[],
+    )
+    tk_bench = SimpleNamespace(
+        info={"longName": "S&P 500", "quoteType": "INDEX", "currency": "USD", "currentPrice": 5100.0},
+        fast_info=SimpleNamespace(last_price=5100.0, previous_close=bench_closes[-1], currency="USD"),
+        history=lambda **kwargs: _df(bench_closes),
+    )
+    tk_fx = SimpleNamespace(
+        fast_info=SimpleNamespace(last_price=1.0),
+        history=lambda **kwargs: pd.DataFrame({"Close": [1.0]}),
+    )
+    monkeypatch.setattr(
+        "app.services.market_data.yf.Ticker",
+        lambda sym: tk_fx if sym == "EURUSD=X" else (tk_bench if sym == "^GSPC" else tk_nvda),
+    )
+
+    def _mock_finnhub(self, path, params=None):
+        if path == "/quote" and (params or {}).get("symbol") == "NVDA":
+            return {"c": 165.0, "pc": 150.0, "d": 15.0, "dp": 10.0}
+        return None
+
+    monkeypatch.setattr("app.services.market_data.MarketDataService._finnhub_get", _mock_finnhub)
+
+    # 1) Finnhub /quote overrides delayed Yahoo price for US stocks
+    q = market_data_service.get_quote_and_info(db_session, "NVDA", refresh=True)
+    assert q["price"] == 165.0
+    assert q["day_change_pct"] == 10.0
+
+    # 2) Portfolio performance appends live Today ("2026-11-24") using live Finnhub price (165.0)
+    res_add = client.post(
+        "/api/portfolio/positions",
+        json={
+            "ticker": "NVDA",
+            "envelope": "CTO",
+            "quantity": 2.0,
+            "pru": 140.0,
+            "currency": "USD",
+            "purchase_date": "2026-10-15",
+        },
+    )
+    assert res_add.status_code == 201
+
+    perf = client.get("/api/portfolio/performance?period=1M&benchmark=%5EGSPC&currency=EUR&mode=real").json()
+    assert perf["points"][-1]["date"] == "2026-11-24"
+    # 2 shares * 165.0 (EURUSD = 1.0) = 330.0
+    assert perf["points"][-1]["portfolio_value"] == pytest.approx(330.0, abs=0.2)
+
+    # 3) Response L1 cache returns fast hit, and cash/position mutation invalidates it
+    dash1 = client.get("/api/portfolio").json()
+    assert dash1["stats"]["total_value_eur"] == pytest.approx(330.0, abs=0.2)
+
+    put_cash = client.put("/api/portfolio/cash", json={"cash_eur": 70.0})
+    assert put_cash.status_code == 200
+    dash2 = client.get("/api/portfolio").json()
+    assert dash2["stats"]["cash_eur"] == 70.0
+    assert dash2["stats"]["total_value_eur"] == pytest.approx(400.0, abs=0.2)

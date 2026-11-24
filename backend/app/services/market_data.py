@@ -1309,7 +1309,33 @@ class MarketDataService:
                     if pct is not None:
                         change_1y_pct = pct * 100.0
 
-            # Optional Finnhub enrichment
+            # Optional Finnhub enrichment (real-time US quote + company profile)
+            if "." not in sym and not sym.startswith("^"):
+                fh_quote = self._finnhub_get("/quote", {"symbol": sym})
+                if isinstance(fh_quote, dict):
+                    fh_c = safe_float(fh_quote.get("c"))
+                    if fh_c is not None and fh_c > 0:
+                        price = fh_c
+                        fh_pc = safe_float(fh_quote.get("pc"))
+                        if fh_pc is not None and fh_pc > 0:
+                            prev_close = fh_pc
+                        fh_d = safe_float(fh_quote.get("d"))
+                        fh_dp = safe_float(fh_quote.get("dp"))
+                        day_change = (
+                            fh_d
+                            if fh_d is not None
+                            else (price - prev_close if prev_close is not None else day_change)
+                        )
+                        day_change_pct = (
+                            fh_dp
+                            if fh_dp is not None
+                            else (
+                                ((price - prev_close) / prev_close) * 100.0
+                                if (prev_close is not None and prev_close > 0)
+                                else day_change_pct
+                            )
+                        )
+
             fh_logo = None
             fh_industry = None
             fh_name = None

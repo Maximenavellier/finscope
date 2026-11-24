@@ -54,6 +54,8 @@ export function PortfolioClient() {
   const [reinforceModalOpen, setReinforceModalOpen] = useState(false);
   const [reinforcingPosition, setReinforcingPosition] = useState<PortfolioPositionItem | null>(null);
   const [perfRefreshKey, setPerfRefreshKey] = useState(0);
+  const [perfForceSeq, setPerfForceSeq] = useState(0);
+  const handledMaxForceSeqRef = useRef(0);
   const [exportNotice, setExportNotice] = useState<{ msg: string; isError: boolean } | null>(null);
   const { displayCurrency } = useDisplayCurrency();
   const [periodicMode, setPeriodicMode] = useState<"real" | "backtest">("real");
@@ -73,40 +75,48 @@ export function PortfolioClient() {
   const SNAPSHOT_KEY = "finscope_portfolio_snapshot_v1";
   const hasPortfolioRef = useRef(false);
 
-  const loadData = useCallback(async (forceRefresh = false, background = false) => {
-    if (forceRefresh) {
-      setRefreshing(true);
-    } else if (!background && !hasPortfolioRef.current) {
-      setLoading(true);
-    }
-    try {
-      const portfolioPromise = getPortfolio(forceRefresh).then((pRes) => {
-        hasPortfolioRef.current = true;
-        setPortfolio(pRes);
-        setLoading(false);
-        setPerfRefreshKey((k) => k + 1);
-        if (typeof window !== "undefined") {
-          try {
-            window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(pRes));
-          } catch {
-            // ignore storage errors
+  const loadData = useCallback(
+    async (forceRefresh = false, background = false, notifyPerf = false) => {
+      if (forceRefresh) {
+        setRefreshing(true);
+      } else if (!background && !hasPortfolioRef.current) {
+        setLoading(true);
+      }
+      try {
+        const portfolioPromise = getPortfolio(forceRefresh).then((pRes) => {
+          hasPortfolioRef.current = true;
+          setPortfolio(pRes);
+          setLoading(false);
+          if (forceRefresh) {
+            setPerfForceSeq((s) => s + 1);
+            setPerfRefreshKey((k) => k + 1);
+          } else if (notifyPerf) {
+            setPerfRefreshKey((k) => k + 1);
           }
-        }
-        return pRes;
-      });
-      const watchlistPromise = getWatchlist(forceRefresh)
-        .then((wRes) => {
-          setWatchlist(wRes);
-        })
-        .catch(() => {
-          // watchlist fetch failure should not block portfolio view
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(pRes));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          return pRes;
         });
-      await Promise.all([portfolioPromise, watchlistPromise]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+        const watchlistPromise = getWatchlist(forceRefresh)
+          .then((wRes) => {
+            setWatchlist(wRes);
+          })
+          .catch(() => {
+            // watchlist fetch failure should not block portfolio view
+          });
+        await Promise.all([portfolioPromise, watchlistPromise]);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     let hasSnapshot = false;
@@ -126,7 +136,7 @@ export function PortfolioClient() {
         // ignore corrupted snapshot
       }
     }
-    loadData(false, hasSnapshot);
+    loadData(false, hasSnapshot, false);
   }, [loadData]);
 
   const positionsCount = portfolio?.positions.length ?? 0;
@@ -136,9 +146,13 @@ export function PortfolioClient() {
       setMaxPerf(null);
       return;
     }
+    const shouldForce = perfForceSeq > handledMaxForceSeqRef.current;
+    if (shouldForce) {
+      handledMaxForceSeqRef.current = perfForceSeq;
+    }
     let cancelled = false;
     setMaxPerfLoading(true);
-    getPortfolioPerformance("MAX", "^GSPC", displayCurrency, periodicMode, false)
+    getPortfolioPerformance("MAX", "^GSPC", displayCurrency, periodicMode, shouldForce)
       .then((res) => {
         if (!cancelled) setMaxPerf(res);
       })
@@ -151,7 +165,7 @@ export function PortfolioClient() {
     return () => {
       cancelled = true;
     };
-  }, [positionsCount, displayCurrency, periodicMode, perfRefreshKey]);
+  }, [positionsCount, displayCurrency, periodicMode, perfRefreshKey, perfForceSeq]);
 
   const handleTargetChange = (nextVal: number) => {
     setTargetAnnualPct(nextVal);
@@ -162,17 +176,17 @@ export function PortfolioClient() {
 
   const handleDeletePosition = async (pos: PortfolioPositionItem) => {
     await deletePortfolioPosition(pos.id);
-    await loadData(false);
+    await loadData(false, true, true);
   };
 
   const handleDeleteSale = async (sale: PortfolioSaleItem) => {
     await deletePortfolioSale(sale.id);
-    await loadData(false);
+    await loadData(false, true, true);
   };
 
   const handleDeleteWatchlist = async (item: WatchlistItemEnriched) => {
     await deleteWatchlistItem(item.id);
-    await loadData(false);
+    await loadData(false, true, false);
   };
 
   if (loading && !portfolio) {
@@ -213,7 +227,7 @@ export function PortfolioClient() {
             <span>Projections PEA</span>
           </Link>
           <ExportBackupMenu
-            onRestored={() => loadData(false)}
+            onRestored={() => loadData(false, true, true)}
             onNotice={(msg, isError = false) => {
               setExportNotice({ msg, isError });
               setTimeout(() => setExportNotice(null), 5000);
@@ -223,7 +237,7 @@ export function PortfolioClient() {
             variant="outline"
             size="sm"
             disabled={refreshing}
-            onClick={() => loadData(true)}
+            onClick={() => loadData(true, false, true)}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
             <span>{refreshing ? "Actualisation..." : "Rafraîchir"}</span>
@@ -310,6 +324,7 @@ export function PortfolioClient() {
           <PortfolioPerformanceCard
             positionsCount={portfolio.positions.length}
             refreshSignal={perfRefreshKey}
+            forceRefreshSeq={perfForceSeq}
           />
 
           <PortfolioPeriodicReturnsCard
@@ -367,28 +382,28 @@ export function PortfolioClient() {
         open={posModalOpen}
         onOpenChange={setPosModalOpen}
         initialPosition={editingPosition}
-        onSaved={() => loadData(false)}
+        onSaved={() => loadData(false, true, true)}
       />
 
       <SellPositionModal
         open={sellModalOpen}
         onOpenChange={setSellModalOpen}
         position={sellingPosition}
-        onSold={() => loadData(false)}
+        onSold={() => loadData(false, true, true)}
       />
 
       <ReinforcePositionModal
         open={reinforceModalOpen}
         onOpenChange={setReinforceModalOpen}
         position={reinforcingPosition}
-        onReinforced={() => loadData(false)}
+        onReinforced={() => loadData(false, true, true)}
       />
 
       <WatchlistModal
         open={wlModalOpen}
         onOpenChange={setWlModalOpen}
         initialItem={editingWatchlist}
-        onSaved={() => loadData(false)}
+        onSaved={() => loadData(false, true, false)}
       />
     </div>
   );

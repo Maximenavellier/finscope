@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EChartsOption } from "echarts";
 import { Loader2, Search } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -32,11 +32,13 @@ const PRESET_BENCHMARKS = [
 interface PortfolioPerformanceCardProps {
   positionsCount: number;
   refreshSignal?: number;
+  forceRefreshSeq?: number;
 }
 
 export function PortfolioPerformanceCard({
   positionsCount,
   refreshSignal = 0,
+  forceRefreshSeq = 0,
 }: PortfolioPerformanceCardProps) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
@@ -84,9 +86,15 @@ export function PortfolioPerformanceCard({
     [positionsCount, displayCurrency]
   );
 
+  const handledForceSeqRef = useRef(0);
+
   useEffect(() => {
-    loadPerf(period, benchmark, calcMode, false);
-  }, [loadPerf, period, benchmark, calcMode, refreshSignal]);
+    const shouldForce = forceRefreshSeq > handledForceSeqRef.current;
+    if (shouldForce) {
+      handledForceSeqRef.current = forceRefreshSeq;
+    }
+    loadPerf(period, benchmark, calcMode, shouldForce);
+  }, [loadPerf, period, benchmark, calcMode, refreshSignal, forceRefreshSeq]);
 
   useEffect(() => {
     const q = customQuery.trim();

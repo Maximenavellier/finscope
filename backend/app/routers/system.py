@@ -14,6 +14,7 @@ from app.db.models import MarketCache
 from app.schemas.market import SystemStatusResponse
 from app.services.cache_service import cache_service
 from app.services.market_data import market_data_service
+from app.services.portfolio_service import portfolio_service
 from app.services.sec_edgar import SEC_HEADERS
 from app.utils.math_utils import utc_now
 
@@ -265,6 +266,7 @@ def clear_system_cache(
     deleted = q.delete(synchronize_session=False)
     db.commit()
     cache_service.clear_memory(db, prefix)
+    portfolio_service.invalidate_response_cache(db)
     with _status_lock:
         _cached_status = None
     market_data_service.reset_fmp_rate_limit()

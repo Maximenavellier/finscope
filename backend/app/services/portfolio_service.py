@@ -1,6 +1,8 @@
 import csv
 import io
 import logging
+import threading
+import time
 from bisect import bisect_right
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -355,7 +357,35 @@ def _extract_dividend_yield_pct(
     return None
 
 
+_DASHBOARD_TTL_SEC = 30.0
+_PERF_TTL_SEC = 60.0
+
+
 class PortfolioService:
+    def __init__(self) -> None:
+        self._resp_lock = threading.RLock()
+        self._dashboard_cache: dict[int, tuple[float, Any, dict[str, Any]]] = {}
+        self._perf_cache: dict[tuple[int, str, str, str, str], tuple[float, Any, dict[str, Any]]] = {}
+
+    @staticmethod
+    def _bind_id(db: Session) -> int:
+        try:
+            bind = db.get_bind()
+            return id(getattr(bind, "engine", bind))
+        except Exception:
+            return 0
+
+    def invalidate_response_cache(self, db: Optional[Session] = None) -> None:
+        with self._resp_lock:
+            if db is None:
+                self._dashboard_cache.clear()
+                self._perf_cache.clear()
+                return
+            bid = self._bind_id(db)
+            self._dashboard_cache.pop(bid, None)
+            for k in [key for key in self._perf_cache if key[0] == bid]:
+                self._perf_cache.pop(k, None)
+
     @staticmethod
     def _serialize_sale(sale: PortfolioSale) -> dict[str, Any]:
         return {
@@ -390,8 +420,7 @@ class PortfolioService:
                 return round(val, 2)
         return 0.0
 
-    @staticmethod
-    def save_portfolio_cash(db: Session, cash_eur: float) -> dict[str, float]:
+    def save_portfolio_cash(self, db: Session, cash_eur: float) -> dict[str, float]:
         cleaned = round(max(0.0, float(cash_eur or 0.0)), 2)
         row = db.get(UserSetting, "portfolio_cash")
         if row is None:
@@ -400,9 +429,11 @@ class PortfolioService:
         else:
             row.value = {"cash_eur": cleaned}
         db.commit()
+        self.invalidate_response_cache(db)
         return {"cash_eur": cleaned}
 
     def get_portfolio_dashboard(self, db: Session, refresh: bool = False) -> dict[str, Any]:
+        bid = self._bind_id(db)
         positions = db.query(PortfolioPosition).order_by(PortfolioPosition.id.asc()).all()
         cash_eur = self.get_portfolio_cash(db)
         sale_rows = (
@@ -410,6 +441,24 @@ class PortfolioService:
             .order_by(PortfolioSale.sale_date.desc(), PortfolioSale.id.desc())
             .all()
         )
+        dash_sig = (
+            tuple(
+                (p.id, p.ticker, p.asset_type, p.envelope, p.quantity, p.pru, p.invested_amount, p.currency, p.purchase_date, p.fees_eur)
+                for p in positions
+            ),
+            cash_eur,
+            tuple((s.id, s.realized_pnl_eur) for s in sale_rows),
+        )
+        if not refresh:
+            with self._resp_lock:
+                cached_entry = self._dashboard_cache.get(bid)
+                if (
+                    cached_entry is not None
+                    and (time.monotonic() - cached_entry[0]) < _DASHBOARD_TTL_SEC
+                    and cached_entry[1] == dash_sig
+                ):
+                    return cached_entry[2]
+
         serialized_sales = [self._serialize_sale(s) for s in sale_rows]
         total_realized_pnl_eur = round(sum(float(s.realized_pnl_eur or 0.0) for s in sale_rows), 2)
 
@@ -717,7 +766,7 @@ class PortfolioService:
 
         clean_positions = [{k: v for k, v in item.items() if k != "_bundle"} for item in valued_items]
 
-        return sanitize_for_json(
+        result = sanitize_for_json(
             {
                 "eurusd_rate": round(eurusd, 6),
                 "stats": stats,
@@ -735,6 +784,9 @@ class PortfolioService:
                 "updated_at": utc_now().isoformat(),
             }
         )
+        with self._resp_lock:
+            self._dashboard_cache[bid] = (time.monotonic(), dash_sig, result)
+        return result
 
     def create_position(self, db: Session, data: PortfolioPositionCreate) -> dict[str, Any]:
         sym = normalize_ticker(data.ticker)
@@ -760,6 +812,7 @@ class PortfolioService:
         db.add(row)
         db.commit()
         db.refresh(row)
+        self.invalidate_response_cache(db)
 
         dash = self.get_portfolio_dashboard(db, refresh=False)
         for item in dash["positions"]:
@@ -798,6 +851,7 @@ class PortfolioService:
             row.notes = data.notes
         row.updated_at = utc_now()
         db.commit()
+        self.invalidate_response_cache(db)
 
         dash = self.get_portfolio_dashboard(db, refresh=False)
         for item in dash["positions"]:
@@ -814,6 +868,7 @@ class PortfolioService:
         )
         db.delete(row)
         db.commit()
+        self.invalidate_response_cache(db)
 
     def reinforce_position(
         self, db: Session, position_id: int, data: PortfolioReinforceRequest
@@ -886,6 +941,7 @@ class PortfolioService:
         db.add(lot_row)
         pos.updated_at = utc_now()
         db.commit()
+        self.invalidate_response_cache(db)
 
         dash = self.get_portfolio_dashboard(db, refresh=False)
         for item in dash["positions"]:
@@ -1021,6 +1077,7 @@ class PortfolioService:
 
         db.commit()
         db.refresh(sale_row)
+        self.invalidate_response_cache(db)
 
         remaining_item = None
         if not is_full_sale:
@@ -1044,6 +1101,7 @@ class PortfolioService:
             raise ValueError(f"Vente {sale_id} introuvable")
         db.delete(row)
         db.commit()
+        self.invalidate_response_cache(db)
 
     def get_portfolio_performance(
         self,
@@ -1063,6 +1121,8 @@ class PortfolioService:
         raw_bench = benchmark.strip() or "^GSPC"
         bench_sym = normalize_ticker(raw_bench)
 
+        bid = self._bind_id(db)
+        perf_cache_key = (bid, period_norm, bench_sym, cur_norm, mode_req)
         bench_labels = {
             "^GSPC": "S&P 500",
             "CW8.PA": "MSCI World (CW8)",
@@ -1079,6 +1139,34 @@ class PortfolioService:
                     )
                 except Exception:
                     return None
+
+        positions = db.query(PortfolioPosition).order_by(PortfolioPosition.id.asc()).all()
+        cash_eur = self.get_portfolio_cash(db)
+        lots_all = (
+            db.query(PortfolioLot)
+            .filter(PortfolioLot.position_id.in_([p.id for p in positions]))
+            .order_by(PortfolioLot.tx_date.asc(), PortfolioLot.id.asc())
+            .all()
+            if positions
+            else []
+        )
+        perf_sig = (
+            tuple(
+                (p.id, p.ticker, p.quantity, p.pru, p.invested_amount, p.currency, p.purchase_date, p.fees_eur)
+                for p in positions
+            ),
+            cash_eur,
+            tuple((l.id, l.position_id, l.quantity_added, l.amount_eur, l.tx_date) for l in lots_all),
+        )
+        if not refresh:
+            with self._resp_lock:
+                cached_perf = self._perf_cache.get(perf_cache_key)
+                if (
+                    cached_perf is not None
+                    and (time.monotonic() - cached_perf[0]) < _PERF_TTL_SEC
+                    and cached_perf[1] == perf_sig
+                ):
+                    return cached_perf[2]
 
         bench_hist = _fetch_hist(bench_sym)
         if bench_hist is None or not bench_hist.get("points"):
@@ -1129,7 +1217,6 @@ class PortfolioService:
                 }
             )
 
-        positions = db.query(PortfolioPosition).order_by(PortfolioPosition.id.asc()).all()
         if not positions:
             default_lbl = (
                 "Backtest composition actuelle"
@@ -1140,7 +1227,6 @@ class PortfolioService:
 
         fx = market_data_service.get_eurusd_rate(db, refresh=refresh)
         eurusd = safe_float(fx.get("rate")) or 1.08
-        cash_eur = self.get_portfolio_cash(db)
         cash_target = cash_eur * eurusd if cur_norm == "USD" else cash_eur
 
         unique_tickers = sorted({p.ticker for p in positions})
@@ -1172,13 +1258,50 @@ class PortfolioService:
         bench_dates = [d for d, _ in bench_points]
         bench_closes = [c for _, c in bench_points]
 
+        # Append / update a live "Today" point from real-time quotes on weekdays so today's curve is never missing
+        now_dt = utc_now()
+        today_date = now_dt.date()
+        today_str = today_date.isoformat()
+        live_quotes_target: dict[str, float] = {}
+        if today_date.weekday() < 5 and bench_dates:
+            try:
+                last_bench_date = date.fromisoformat(bench_dates[-1])
+                days_gap = (today_date - last_bench_date).days
+            except Exception:
+                days_gap = 99
+            if 0 <= days_gap <= 3:
+                def _live_quote_target(sym_q: str, fallback_cur: str = "USD") -> Optional[float]:
+                    try:
+                        q = market_data_service.get_quote_and_info(db, sym_q, refresh=refresh)
+                        raw_px = safe_float(q.get("price"))
+                        if raw_px is None or raw_px <= 0:
+                            return None
+                        q_cur = q.get("currency") or fallback_cur
+                        eur_px = _to_eur(raw_px, q_cur, eurusd, db=db)
+                        if eur_px is None or eur_px <= 0:
+                            return None
+                        return round(eur_px * eurusd if cur_norm == "USD" else eur_px, 4)
+                    except Exception:
+                        return None
+
+                live_bench = _live_quote_target(bench_sym, str(bench_hist.get("native_currency") or "USD"))
+                if bench_dates[-1] < today_str:
+                    bench_dates.append(today_str)
+                    bench_closes.append(live_bench if live_bench is not None else bench_closes[-1])
+                elif bench_dates[-1] == today_str and live_bench is not None:
+                    bench_closes[-1] = live_bench
+
+                if period_norm == "1D" and len(bench_dates) > 2:
+                    bench_dates = bench_dates[-2:]
+                    bench_closes = bench_closes[-2:]
+
+                for t_sym in unique_tickers:
+                    lq = _live_quote_target(t_sym)
+                    if lq is not None and lq > 0:
+                        live_quotes_target[t_sym] = lq
+
         lots_by_pos: dict[int, list[PortfolioLot]] = defaultdict(list)
-        for lot in (
-            db.query(PortfolioLot)
-            .filter(PortfolioLot.position_id.in_([p.id for p in positions]))
-            .order_by(PortfolioLot.tx_date.asc(), PortfolioLot.id.asc())
-            .all()
-        ):
+        for lot in lots_all:
             lots_by_pos[lot.position_id].append(lot)
 
         pos_entries: list[dict[str, Any]] = []
@@ -1198,6 +1321,13 @@ class PortfolioService:
 
             p_dates = [d for d, _ in pts]
             p_closes = [c for _, c in pts]
+            live_px = live_quotes_target.get(pos.ticker)
+            if live_px is not None and live_px > 0 and bench_dates and bench_dates[-1] == today_str:
+                if p_dates[-1] < today_str:
+                    p_dates.append(today_str)
+                    p_closes.append(live_px)
+                elif p_dates[-1] == today_str:
+                    p_closes[-1] = live_px
             last_close = p_closes[-1]
 
             if pos.quantity is not None and pos.quantity > 0:
@@ -1463,7 +1593,7 @@ class PortfolioService:
         avg_alpha = round(sum(daily_diffs) / len(daily_diffs), 2) if daily_diffs else alpha
         periodic_stats = self._compute_cagr_and_periodic_returns(series_points)
 
-        return sanitize_for_json(
+        perf_result = sanitize_for_json(
             {
                 "period": period_norm,
                 "benchmark": bench_sym,
@@ -1485,6 +1615,9 @@ class PortfolioService:
                 "updated_at": utc_now().isoformat(),
             }
         )
+        with self._resp_lock:
+            self._perf_cache[perf_cache_key] = (time.monotonic(), perf_sig, perf_result)
+        return perf_result
 
     @staticmethod
     def _compute_cagr_and_periodic_returns(series_points: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2350,6 +2483,7 @@ class PortfolioService:
             settings_count += 1
 
         db.commit()
+        self.invalidate_response_cache(db)
         return {
             "restored": True,
             "positions_count": pos_count,
