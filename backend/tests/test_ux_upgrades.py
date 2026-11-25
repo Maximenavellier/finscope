@@ -665,3 +665,127 @@ def test_finnhub_forward_pe_screener_and_radar_52w_high_fallback(client, db_sess
     assert len(pust_items) == 1
     # 160 vs peak 200 => -20.0%
     assert pust_items[0]["distance_52w_high_pct"] == pytest.approx(-20.0, abs=0.2)
+
+
+def test_finnhub_fast_path_2min_ttl_and_force_query_param(client, db_session, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.config import Settings
+    from app.services.cache_service import cache_service
+    from app.services.market_data import market_data_service
+
+    # 1) Default quote/FX cache TTL is 2 minutes
+    assert Settings(_env_file=None).CACHE_TTL_QUOTE_MINUTES == 2
+
+    fixed_tuesday = datetime(2026, 11, 24, 15, 30, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.services.portfolio_service.utc_now", lambda: fixed_tuesday)
+
+    # Seed NVDA quote cache with metadata so Finnhub fast-path can update price without calling yf.Ticker
+    cache_service.set(
+        db_session,
+        "quote:NVDA",
+        "quote",
+        {
+            "ticker": "NVDA",
+            "name": "NVIDIA Corporation",
+            "asset_type": "EQUITY",
+            "currency": "USD",
+            "region": "US",
+            "pea_eligible": False,
+            "sector": "Technology",
+            "industry": "Semiconductors",
+            "price": 150.0,
+            "previous_close": 145.0,
+        },
+    )
+
+    yf_calls = []
+    dts = pd.date_range(end="2026-11-23", periods=20, freq="B")
+    hist_df = pd.DataFrame(
+        {
+            "Open": [100.0] * len(dts),
+            "High": [100.0] * len(dts),
+            "Low": [100.0] * len(dts),
+            "Close": [100.0] * len(dts),
+            "Volume": [1_000_000] * len(dts),
+            "Stock Splits": [0.0] * len(dts),
+        },
+        index=dts,
+    )
+    tk_eu = SimpleNamespace(
+        info={"longName": "Amundi PEA Nasdaq-100 UCITS ETF Acc", "quoteType": "ETF", "currency": "EUR", "regularMarketPrice": 102.5, "previousClose": 100.0},
+        fast_info=SimpleNamespace(last_price=102.5, previous_close=100.0, currency="EUR"),
+        history=lambda **kwargs: hist_df,
+    )
+    tk_bench = SimpleNamespace(
+        info={"longName": "S&P 500", "quoteType": "INDEX", "currency": "USD", "currentPrice": 5000.0},
+        fast_info=SimpleNamespace(last_price=5000.0, previous_close=5000.0, currency="USD"),
+        history=lambda **kwargs: pd.DataFrame({"Close": [5000.0] * len(dts), "Stock Splits": [0.0] * len(dts)}, index=dts),
+    )
+
+    fx_rate_box = {"rate": 1.0}
+    tk_fx = SimpleNamespace(
+        fast_info=SimpleNamespace(last_price=fx_rate_box["rate"]),
+        history=lambda **kwargs: pd.DataFrame({"Close": [fx_rate_box["rate"]]}),
+    )
+
+    def _mock_ticker(sym):
+        yf_calls.append(sym)
+        if sym == "EURUSD=X":
+            return SimpleNamespace(
+                fast_info=SimpleNamespace(last_price=fx_rate_box["rate"]),
+                history=lambda **kwargs: pd.DataFrame({"Close": [fx_rate_box["rate"]]}),
+            )
+        if sym == "^GSPC":
+            return tk_bench
+        return tk_eu
+
+    monkeypatch.setattr("app.services.market_data.yf.Ticker", _mock_ticker)
+
+    fh_price_box = {"c": 170.0, "pc": 160.0}
+    fh_calls = []
+
+    def _mock_finnhub(self, path, params=None):
+        fh_calls.append((path, (params or {}).get("symbol")))
+        if path == "/quote" and (params or {}).get("symbol") == "NVDA":
+            return {"c": fh_price_box["c"], "pc": fh_price_box["pc"]}
+        return None
+
+    monkeypatch.setattr("app.services.market_data.MarketDataService._finnhub_get", _mock_finnhub)
+
+    # 2) Finnhub fast-path on NVDA updates price without invoking yf.Ticker('NVDA')
+    q_us = market_data_service.get_quote_and_info(db_session, "NVDA", refresh=True)
+    assert q_us["price"] == 170.0
+    assert q_us["previous_close"] == 160.0
+    assert q_us["day_change_pct"] == pytest.approx(6.25, abs=0.05)
+    assert "NVDA" not in yf_calls
+
+    # EU ETF PUST.PA ignores Finnhub and fetches from Yahoo
+    q_eu = market_data_service.get_quote_and_info(db_session, "PUST.PA", refresh=True)
+    assert q_eu["price"] == 102.5
+    assert "PUST.PA" in yf_calls
+
+    # 3) ?force=true bypasses cached NVDA quote & EUR/USD rate across portfolio, performance & fx endpoints
+    res_add = client.post(
+        "/api/portfolio/positions",
+        json={"ticker": "NVDA", "envelope": "CTO", "quantity": 1.0, "pru": 140.0, "currency": "USD", "purchase_date": "2026-11-01"},
+    )
+    assert res_add.status_code == 201
+    dash_cached = client.get("/api/portfolio").json()
+    assert dash_cached["stats"]["total_value_eur"] == pytest.approx(170.0, abs=0.2)
+
+    # Update live Finnhub price & FX rate while caches are still fresh
+    fh_price_box["c"] = 180.0
+    fx_rate_box["rate"] = 1.2
+
+    fx_force = client.get("/api/fx/eurusd?force=true").json()
+    assert fx_force["rate"] == pytest.approx(1.2, abs=0.001)
+
+    dash_force = client.get("/api/portfolio?force=true").json()
+    # 1 share * 180 USD / 1.2 EURUSD = 150.0 EUR
+    assert dash_force["eurusd_rate"] == pytest.approx(1.2, abs=0.001)
+    assert dash_force["stats"]["total_value_eur"] == pytest.approx(150.0, abs=0.2)
+
+    perf_force = client.get("/api/portfolio/performance?period=1M&benchmark=%5EGSPC&currency=EUR&mode=real&force=true").json()
+    assert perf_force["points"][-1]["date"] == "2026-11-24"
+    assert perf_force["points"][-1]["portfolio_value"] == pytest.approx(150.0, abs=0.2)

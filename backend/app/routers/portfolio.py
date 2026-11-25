@@ -33,9 +33,10 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 @router.get("", response_model=PortfolioDashboardResponse)
 def get_portfolio_dashboard(
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    return portfolio_service.get_portfolio_dashboard(db, refresh=refresh)
+    return portfolio_service.get_portfolio_dashboard(db, refresh=(refresh or force))
 
 
 @router.put("/cash", response_model=PortfolioCashUpdate)
@@ -53,6 +54,7 @@ def get_portfolio_performance(
     currency: str = Query("EUR"),
     mode: Literal["real", "backtest"] = Query("real"),
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     try:
@@ -62,7 +64,7 @@ def get_portfolio_performance(
             benchmark=benchmark,
             currency=currency,
             mode=mode,
-            refresh=refresh,
+            refresh=(refresh or force),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -148,9 +150,10 @@ def delete_portfolio_sale(
 @router.get("/radar", response_model=OpportunityRadarResponse)
 def get_opportunity_radar(
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    return portfolio_service.get_opportunity_radar(db, refresh=refresh)
+    return portfolio_service.get_opportunity_radar(db, refresh=(refresh or force))
 
 
 @router.get("/dca/settings", response_model=DcaSettings)

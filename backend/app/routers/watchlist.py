@@ -17,9 +17,10 @@ router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 @router.get("", response_model=WatchlistResponse)
 def get_watchlist(
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    return portfolio_service.get_watchlist(db, refresh=refresh)
+    return portfolio_service.get_watchlist(db, refresh=(refresh or force))
 
 
 @router.post(

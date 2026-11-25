@@ -10,6 +10,7 @@ interface CurrencyContextValue {
   displayCurrency: DisplayCurrency;
   setDisplayCurrency: (cur: DisplayCurrency) => void;
   eurusdRate: number;
+  syncEurUsdRate: (rate: number) => void;
   fxToEurMap: Record<string, number>;
   registerFxRate: (fromCurrency: string, rateToEur: number) => void;
   ensureFxRate: (fromCurrency?: string | null) => void;
@@ -36,6 +37,7 @@ const CurrencyContext = createContext<CurrencyContextValue>({
   displayCurrency: "EUR",
   setDisplayCurrency: () => {},
   eurusdRate: 1.08,
+  syncEurUsdRate: () => {},
   fxToEurMap: {},
   registerFxRate: () => {},
   ensureFxRate: () => {},
@@ -86,6 +88,12 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.setItem(STORAGE_KEY, cur);
     } catch {
       // ignore storage errors
+    }
+  }, []);
+
+  const syncEurUsdRate = useCallback((rate: number) => {
+    if (isValidNumber(rate) && rate > 0) {
+      setEurusdRate(rate);
     }
   }, []);
 
@@ -193,6 +201,7 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
       displayCurrency,
       setDisplayCurrency,
       eurusdRate,
+      syncEurUsdRate,
       fxToEurMap,
       registerFxRate,
       ensureFxRate,
@@ -205,6 +214,7 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
       displayCurrency,
       setDisplayCurrency,
       eurusdRate,
+      syncEurUsdRate,
       fxToEurMap,
       registerFxRate,
       ensureFxRate,

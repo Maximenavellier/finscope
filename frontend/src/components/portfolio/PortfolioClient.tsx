@@ -57,7 +57,7 @@ export function PortfolioClient() {
   const [perfForceSeq, setPerfForceSeq] = useState(0);
   const handledMaxForceSeqRef = useRef(0);
   const [exportNotice, setExportNotice] = useState<{ msg: string; isError: boolean } | null>(null);
-  const { displayCurrency } = useDisplayCurrency();
+  const { displayCurrency, syncEurUsdRate } = useDisplayCurrency();
   const [periodicMode, setPeriodicMode] = useState<"real" | "backtest">("real");
   const [targetAnnualPct, setTargetAnnualPct] = useState<number>(() => {
     if (typeof window !== "undefined") {
@@ -86,6 +86,9 @@ export function PortfolioClient() {
         const portfolioPromise = getPortfolio(forceRefresh).then((pRes) => {
           hasPortfolioRef.current = true;
           setPortfolio(pRes);
+          if (pRes?.eurusd_rate) {
+            syncEurUsdRate(pRes.eurusd_rate);
+          }
           setLoading(false);
           if (forceRefresh) {
             setPerfForceSeq((s) => s + 1);
@@ -115,7 +118,7 @@ export function PortfolioClient() {
         setRefreshing(false);
       }
     },
-    []
+    [syncEurUsdRate]
   );
 
   useEffect(() => {

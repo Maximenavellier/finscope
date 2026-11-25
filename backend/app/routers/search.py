@@ -11,9 +11,10 @@ router = APIRouter(prefix="/api", tags=["search-fx"])
 @router.get("/fx/eurusd", response_model=FxRateResponse)
 def get_eurusd(
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    return market_data_service.get_eurusd_rate(db, refresh=refresh)
+    return market_data_service.get_eurusd_rate(db, refresh=(refresh or force))
 
 
 @router.get("/fx/rate", response_model=FxRateResponse)
@@ -21,9 +22,12 @@ def get_fx_rate(
     from_currency: str = Query(..., alias="from", min_length=2, max_length=8),
     to_currency: str = Query("EUR", alias="to", min_length=2, max_length=8),
     refresh: bool = Query(False),
+    force: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    return market_data_service.get_fx_rate(db, from_currency, to_currency, refresh=refresh)
+    return market_data_service.get_fx_rate(
+        db, from_currency, to_currency, refresh=(refresh or force)
+    )
 
 
 @router.get("/search", response_model=SearchResponse)

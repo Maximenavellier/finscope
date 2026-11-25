@@ -23,7 +23,7 @@ services:
       - key: CORS_ORIGINS
         value: http://localhost:3000
       - key: CACHE_TTL_QUOTE_MINUTES
-        value: "15"
+        value: "2"
       - key: CACHE_TTL_FUNDAMENTALS_HOURS
         value: "24"
       - key: PEER_FETCH_CONCURRENCY

@@ -201,6 +201,7 @@ function isReadOnlyPost(path: string, init?: RequestInit): boolean {
 function resolveGetCacheTtl(path: string): number {
   if (
     path.includes("refresh=true") ||
+    path.includes("force=true") ||
     path.startsWith("/api/auth/") ||
     path.startsWith("/api/screener/seed/status") ||
     path.startsWith("/api/portfolio/backup")
@@ -318,7 +319,7 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
     return data;
   }
 
-  if (path.includes("refresh=true")) {
+  if (path.includes("refresh=true") || path.includes("force=true")) {
     const base = path.split("?")[0];
     clearApiCache(base);
     if (base.startsWith("/api/portfolio")) {
@@ -331,7 +332,9 @@ async function executeFetch<T>(path: string, init?: RequestInit): Promise<T> {
       clearApiCache("/api/portfolio");
     }
     const freshData = await rawExecuteFetch<T>(path, init);
-    const normalizedPath = path.replace("refresh=true", "refresh=false");
+    const normalizedPath = path
+      .replace(/([?&])force=true\b/g, "$1refresh=false")
+      .replace(/([?&])refresh=true\b/g, "$1refresh=false");
     const normTtl = resolveGetCacheTtl(normalizedPath);
     if (normTtl > 0) {
       memoryGetCache.set(normalizedPath, { data: freshData, ts: Date.now() });
@@ -379,7 +382,7 @@ export async function searchAssets(query: string, limit = 12): Promise<SearchRes
 }
 
 export async function getFxEurUsd(refresh = false): Promise<FxRateResponse> {
-  return executeFetch<FxRateResponse>(`/api/fx/eurusd?refresh=${refresh}`);
+  return executeFetch<FxRateResponse>(`/api/fx/eurusd?${refresh ? "force=true" : "refresh=false"}`);
 }
 
 export async function getFxRate(
@@ -390,8 +393,8 @@ export async function getFxRate(
   const params = new URLSearchParams({
     from: fromCurrency,
     to: toCurrency,
-    refresh: String(refresh),
   });
+  params.set(refresh ? "force" : "refresh", String(refresh));
   return executeFetch<FxRateResponse>(`/api/fx/rate?${params.toString()}`);
 }
 
@@ -509,7 +512,7 @@ export async function postFairValue(
 }
 
 export async function getPortfolio(refresh = false): Promise<PortfolioDashboardResponse> {
-  return executeFetch<PortfolioDashboardResponse>(`/api/portfolio?refresh=${refresh}`);
+  return executeFetch<PortfolioDashboardResponse>(`/api/portfolio?${refresh ? "force=true" : "refresh=false"}`);
 }
 
 export async function savePortfolioCash(cash_eur: number): Promise<{ cash_eur: number }> {
@@ -531,8 +534,8 @@ export async function getPortfolioPerformance(
     benchmark,
     currency,
     mode,
-    refresh: String(refresh),
   });
+  params.set(refresh ? "force" : "refresh", String(refresh));
   return executeFetch<PortfolioPerformanceResponse>(`/api/portfolio/performance?${params.toString()}`);
 }
 
@@ -625,7 +628,7 @@ export async function deletePortfolioSale(saleId: number): Promise<{ deleted: bo
 }
 
 export async function getWatchlist(refresh = false): Promise<WatchlistResponse> {
-  return executeFetch<WatchlistResponse>(`/api/watchlist?refresh=${refresh}`);
+  return executeFetch<WatchlistResponse>(`/api/watchlist?${refresh ? "force=true" : "refresh=false"}`);
 }
 
 export async function upsertWatchlistItem(body: {

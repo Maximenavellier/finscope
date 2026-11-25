@@ -1351,6 +1351,54 @@ class MarketDataService:
                 return payload
 
         try:
+            is_us = "." not in sym and not sym.startswith("^")
+            fh_quote = self._finnhub_get("/quote", {"symbol": sym}) if is_us else None
+            fh_c = safe_float(fh_quote.get("c")) if isinstance(fh_quote, dict) else None
+
+            if fh_c is not None and fh_c > 0:
+                prev_cached = cache_service.get(db, cache_key, allow_stale=True)
+                if prev_cached is not None and isinstance(prev_cached.payload, dict):
+                    cached_base = dict(prev_cached.payload)
+                    cached_name = str(cached_base.get("name") or "").strip()
+                    has_meta = bool(cached_name and cached_name.upper() != sym) and (
+                        cached_base.get("asset_type") == "ETF" or bool(cached_base.get("sector"))
+                    )
+                    if has_meta:
+                        payload = self._repair_cached_quote_payload(db, sym, cached_base, persist=False)
+                        fh_pc = safe_float(fh_quote.get("pc"))
+                        if fh_pc is not None and fh_pc > 0:
+                            payload["previous_close"] = fh_pc
+                        prev_c = safe_float(payload.get("previous_close"))
+                        fh_d = safe_float(fh_quote.get("d"))
+                        fh_dp = safe_float(fh_quote.get("dp"))
+                        payload["price"] = fh_c
+                        payload["day_change"] = (
+                            fh_d
+                            if fh_d is not None
+                            else (round(fh_c - prev_c, 4) if prev_c is not None else payload.get("day_change"))
+                        )
+                        payload["day_change_pct"] = (
+                            fh_dp
+                            if fh_dp is not None
+                            else (
+                                ((fh_c - prev_c) / prev_c) * 100.0
+                                if (prev_c is not None and prev_c > 0)
+                                else payload.get("day_change_pct")
+                            )
+                        )
+                        fx_eur, px_eur = self._compute_eur_estimate_fields(db, payload.get("currency"), fh_c)
+                        payload["fx_to_eur_rate"] = fx_eur
+                        payload["price_eur"] = px_eur
+                        updated_at = cache_service.set(db, cache_key, "quote", payload)
+                        self._upsert_asset_from_quote(db, payload, updated_at)
+                        return sanitize_for_json(
+                            {
+                                **payload,
+                                "updated_at": updated_at.isoformat(),
+                                "is_stale": False,
+                            }
+                        )
+
             tk = yf.Ticker(sym)
             try:
                 info = tk.info or {}
@@ -1375,10 +1423,10 @@ class MarketDataService:
                 pass
 
             price = (
-                safe_float(info.get("currentPrice"))
+                fast_price
                 or safe_float(info.get("regularMarketPrice"))
+                or safe_float(info.get("currentPrice"))
                 or safe_float(info.get("navPrice"))
-                or fast_price
             )
 
             hist_1y = None
@@ -1394,7 +1442,7 @@ class MarketDataService:
                     price = safe_float(closes.iloc[-1])
 
             raw_name = info.get("longName") or info.get("shortName") or info.get("displayName")
-            if price is None and not raw_name:
+            if price is None and fh_c is None and not raw_name:
                 raise ValueError(f"Ticker '{sym}' not found")
 
             quote_type = str(info.get("quoteType") or "").upper()
@@ -1422,32 +1470,28 @@ class MarketDataService:
                     if pct is not None:
                         change_1y_pct = pct * 100.0
 
-            # Optional Finnhub enrichment (real-time US quote + company profile)
-            if "." not in sym and not sym.startswith("^"):
-                fh_quote = self._finnhub_get("/quote", {"symbol": sym})
-                if isinstance(fh_quote, dict):
-                    fh_c = safe_float(fh_quote.get("c"))
-                    if fh_c is not None and fh_c > 0:
-                        price = fh_c
-                        fh_pc = safe_float(fh_quote.get("pc"))
-                        if fh_pc is not None and fh_pc > 0:
-                            prev_close = fh_pc
-                        fh_d = safe_float(fh_quote.get("d"))
-                        fh_dp = safe_float(fh_quote.get("dp"))
-                        day_change = (
-                            fh_d
-                            if fh_d is not None
-                            else (price - prev_close if prev_close is not None else day_change)
-                        )
-                        day_change_pct = (
-                            fh_dp
-                            if fh_dp is not None
-                            else (
-                                ((price - prev_close) / prev_close) * 100.0
-                                if (prev_close is not None and prev_close > 0)
-                                else day_change_pct
-                            )
-                        )
+            # Prioritize Finnhub real-time US quote over Yahoo when available
+            if isinstance(fh_quote, dict) and fh_c is not None and fh_c > 0:
+                price = fh_c
+                fh_pc = safe_float(fh_quote.get("pc"))
+                if fh_pc is not None and fh_pc > 0:
+                    prev_close = fh_pc
+                fh_d = safe_float(fh_quote.get("d"))
+                fh_dp = safe_float(fh_quote.get("dp"))
+                day_change = (
+                    fh_d
+                    if fh_d is not None
+                    else (price - prev_close if prev_close is not None else day_change)
+                )
+                day_change_pct = (
+                    fh_dp
+                    if fh_dp is not None
+                    else (
+                        ((price - prev_close) / prev_close) * 100.0
+                        if (prev_close is not None and prev_close > 0)
+                        else day_change_pct
+                    )
+                )
 
             fh_logo = None
             fh_industry = None

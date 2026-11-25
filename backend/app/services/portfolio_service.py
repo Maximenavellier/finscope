@@ -97,16 +97,16 @@ def _enrich_single_ticker(
             quote = market_data_service.get_quote_and_info(db, sym, refresh=refresh)
             prices: Optional[dict[str, Any]] = None
             if quote.get("asset_type") == "ETF":
-                prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=refresh)
+                prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=False)
                 scores = score_etf(quote, prices)
                 fair_value = None
                 red_flags: list[dict[str, Any]] = []
             else:
                 try:
-                    prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=refresh)
+                    prices = market_data_service.get_price_history(db, sym, period="MAX", refresh=False)
                 except Exception:
                     prices = None
-                funds = market_data_service.get_fundamentals(db, sym, refresh=refresh)
+                funds = market_data_service.get_fundamentals(db, sym, refresh=False)
                 sec_avg = get_cached_sector_averages(
                     db, quote.get("sector"), quote.get("industry"), sym
                 )
@@ -1135,7 +1135,7 @@ class PortfolioService:
             with sf() as local_db:
                 try:
                     return market_data_service.get_price_history(
-                        local_db, sym, period=period_norm, currency=cur_norm, refresh=refresh
+                        local_db, sym, period=period_norm, currency=cur_norm, refresh=False
                     )
                 except Exception:
                     return None
